@@ -1,0 +1,11 @@
+{$BUSINESS_HOST} {
+    reverse_proxy business-service:8080
+}
+{$FASTGPT_HOST} {
+    handle /admin-entry/fastgpt {
+        reverse_proxy business-service:8080
+    }
+    handle {
+        reverse_proxy fastgpt:3000
+    }
+}

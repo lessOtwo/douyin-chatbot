@@ -1,0 +1,3 @@
+# Retired Typebot contract fixtures. See docs/PLAN.md for current implementation status.
+name: douyin-chatbot-mock
+services: {}

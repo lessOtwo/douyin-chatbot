@@ -1,0 +1,19 @@
+# Merge with compose.yaml for the production HTTPS entry points.
+services:
+  business-service:
+    environment:
+      SECURE_COOKIE: "true"
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      BUSINESS_HOST: ${BUSINESS_HOST:?set production domains}
+      FASTGPT_HOST: ${FASTGPT_HOST:?set production domains}
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "renovation-demo",
+    "merchant_id": "merchant-demo",
+    "industry": "装修装饰",
+    "fastgpt_app_id": "mock-app",
+    "fastgpt_key_env": "FASTGPT_APP_KEY",
+    "reply_window_seconds": 86400
+  },
+  {
+    "id": "second-account",
+    "merchant_id": "merchant-second",
+    "industry": "门窗",
+    "fastgpt_app_id": "mock-app",
+    "fastgpt_key_env": "FASTGPT_APP_KEY",
+    "reply_window_seconds": 86400
+  }
+]

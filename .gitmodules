@@ -1,0 +1,3 @@
+[submodule "FastGPT"]
+	path = FastGPT
+	url = https://github.com/labring/FastGPT.git

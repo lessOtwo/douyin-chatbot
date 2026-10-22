@@ -1,0 +1,7 @@
+# Optional upstream source builds; default startup uses pinned published images.
+services:
+  fastgpt:
+    image: douyin-chatbot/fastgpt:source
+    build:
+      context: ./FastGPT
+      dockerfile: projects/app/Dockerfile

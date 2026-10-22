@@ -1,0 +1,296 @@
+{
+  "version": "6.1",
+  "id": "renovation-template",
+  "name": "装修私信 · 业务服务与 FastGPT",
+  "events": [
+    {
+      "id": "start",
+      "type": "start",
+      "outgoingEdgeId": "start-input",
+      "graphCoordinates": {
+        "x": 0,
+        "y": 0
+      }
+    }
+  ],
+  "groups": [
+    {
+      "id": "input",
+      "title": "接收客户自然语言",
+      "graphCoordinates": {
+        "x": 200,
+        "y": 0
+      },
+      "blocks": [
+        {
+          "id": "customer-input",
+          "type": "text input",
+          "outgoingEdgeId": "input-understand",
+          "options": {
+            "variableId": "var-customer_message"
+          }
+        }
+      ]
+    },
+    {
+      "id": "understand",
+      "title": "业务服务调用 FastGPT",
+      "graphCoordinates": {
+        "x": 600,
+        "y": 0
+      },
+      "blocks": [
+        {
+          "id": "understand-http",
+          "type": "Webhook",
+          "outgoingEdgeId": "understand-branch",
+          "options": {
+            "isCustomBody": true,
+            "isExecutedOnClient": false,
+            "timeout": 40,
+            "webhook": {
+              "url": "http://business-service:8080/internal/understand",
+              "method": "POST",
+              "headers": [
+                {
+                  "id": "content-type",
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "id": "internal-key",
+                  "key": "x-internal-key",
+                  "value": "{{internal_key}}"
+                }
+              ],
+              "body": "{\"account_id\": \"{{account_id}}\", \"conversation_id\": \"{{conversation_id}}\", \"text\": \"{{customer_message}}\"}"
+            },
+            "responseVariableMapping": [
+              {
+                "id": "map-reply",
+                "variableId": "var-assistant_reply",
+                "bodyPath": "data.reply"
+              },
+              {
+                "id": "map-action",
+                "variableId": "var-action",
+                "bodyPath": "data.action"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "branch",
+      "title": "继续、转人工或停止",
+      "graphCoordinates": {
+        "x": 1000,
+        "y": 0
+      },
+      "blocks": [
+        {
+          "id": "action-condition",
+          "type": "Condition",
+          "outgoingEdgeId": "branch-reply",
+          "items": [
+            {
+              "id": "handoff-item",
+              "outgoingEdgeId": "branch-end",
+              "content": {
+                "comparisons": [
+                  {
+                    "id": "is-handoff",
+                    "variableId": "var-action",
+                    "comparisonOperator": "Equal to",
+                    "value": "handoff"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "stop-item",
+              "outgoingEdgeId": "branch-stop",
+              "content": {
+                "comparisons": [
+                  {
+                    "id": "is-stop",
+                    "variableId": "var-action",
+                    "comparisonOperator": "Equal to",
+                    "value": "stop"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reply",
+      "title": "回复后等待下一轮",
+      "graphCoordinates": {
+        "x": 1400,
+        "y": 0
+      },
+      "blocks": [
+        {
+          "id": "reply-text",
+          "type": "text",
+          "outgoingEdgeId": "reply-input",
+          "content": {
+            "richText": [
+              {
+                "type": "p",
+                "children": [
+                  {
+                    "text": "{{assistant_reply}}"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "end",
+      "title": "结束自动流程",
+      "graphCoordinates": {
+        "x": 1400,
+        "y": 400
+      },
+      "blocks": [
+        {
+          "id": "end-text",
+          "type": "text",
+          "content": {
+            "richText": [
+              {
+                "type": "p",
+                "children": [
+                  {
+                    "text": "{{assistant_reply}}"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-input",
+      "from": {
+        "eventId": "start"
+      },
+      "to": {
+        "groupId": "input"
+      }
+    },
+    {
+      "id": "input-understand",
+      "from": {
+        "blockId": "customer-input"
+      },
+      "to": {
+        "groupId": "understand"
+      }
+    },
+    {
+      "id": "understand-branch",
+      "from": {
+        "blockId": "understand-http"
+      },
+      "to": {
+        "groupId": "branch"
+      }
+    },
+    {
+      "id": "branch-reply",
+      "from": {
+        "blockId": "action-condition"
+      },
+      "to": {
+        "groupId": "reply"
+      }
+    },
+    {
+      "id": "branch-end",
+      "from": {
+        "blockId": "action-condition",
+        "itemId": "handoff-item"
+      },
+      "to": {
+        "groupId": "end"
+      }
+    },
+    {
+      "id": "branch-stop",
+      "from": {
+        "blockId": "action-condition",
+        "itemId": "stop-item"
+      },
+      "to": {
+        "groupId": "end"
+      }
+    },
+    {
+      "id": "reply-input",
+      "from": {
+        "blockId": "reply-text"
+      },
+      "to": {
+        "groupId": "input"
+      }
+    }
+  ],
+  "variables": [
+    {
+      "id": "var-account_id",
+      "name": "account_id",
+      "isSessionVariable": true
+    },
+    {
+      "id": "var-conversation_id",
+      "name": "conversation_id",
+      "isSessionVariable": true
+    },
+    {
+      "id": "var-internal_key",
+      "name": "internal_key",
+      "isSessionVariable": true
+    },
+    {
+      "id": "var-customer_message",
+      "name": "customer_message",
+      "isSessionVariable": true
+    },
+    {
+      "id": "var-assistant_reply",
+      "name": "assistant_reply",
+      "isSessionVariable": true
+    },
+    {
+      "id": "var-action",
+      "name": "action",
+      "isSessionVariable": true
+    }
+  ],
+  "theme": {},
+  "selectedThemeTemplateId": null,
+  "settings": {},
+  "createdAt": "2023-12-02T09:12:14.750Z",
+  "updatedAt": "2023-12-02T09:14:20.047Z",
+  "icon": "🏠",
+  "folderId": null,
+  "publicId": null,
+  "customDomain": null,
+  "workspaceId": "workspace",
+  "resultsTablePreferences": null,
+  "isArchived": false,
+  "isClosed": false,
+  "whatsAppCredentialsId": null
+}
