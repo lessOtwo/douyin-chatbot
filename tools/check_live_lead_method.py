@@ -46,13 +46,13 @@ def main():
     assert changed["fields"].get("contact_method") == "wechat" and changed["fields"].get("contact_value") == "13700000000", changed
     assert "phone" not in changed["fields"], changed
     peer_message = ask("peer-message-" + uuid.uuid4().hex,
-                       "我是做木门安装的，合作吗？我的电话是13600000000")
+                       "我们是做考研培训的机构，想合作招生，我的电话是13600000000")
     assert peer_message == {"reply": "不用呢 谢谢", "action": "peer", "fields": {}}, peer_message
     peer_nickname = ask("peer-nickname-" + uuid.uuid4().hex,
-                        "你好，我们可以合作吗？", "青岛木门安装服务商")
+                        "你好，我们可以合作招生吗？", "泰安成人学历招生中心")
     assert peer_nickname == {"reply": "不用呢 谢谢", "action": "peer", "fields": {}}, peer_nickname
     consumer = ask("peer-consumer-" + uuid.uuid4().hex,
-                   "我家木门坏了，想装修一下，可以咨询吗？", "装修小白")
+                   "我是想报成人本科的，可以咨询吗？", "泰安学生家长")
     assert consumer["action"] != "peer", consumer
     print(json.dumps({"result": "passed", "checks": ["phone-based WeChat",
         "direct phone call", "later contact-channel correction",

@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 config/accounts.json
 config/fastgpt-workflow-draft.json
 *.local.env
@@ -6,6 +8,9 @@ data/
 backups/
 artifacts/
 business-service/target/
+.venv/
+node_modules/
+.pytest_cache/
 __pycache__/
 *.pyc
 .logs/
