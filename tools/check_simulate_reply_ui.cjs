@@ -50,9 +50,29 @@ const env = Object.fromEntries(fs.readFileSync(path.join(root, '.env'), 'utf8')
         !intercepted.body.event_id || !intercepted.body.message_id) {
       throw Error('simulation request did not preserve current account, conversation and customer');
     }
+    await page.evaluate(() => {
+      const current = data.conversations.find(item => item.id === selected);
+      current.reply_rounds = 50;
+      current.mode = 'paused';
+      render();
+    });
+    const capped = page.locator('#conversationList tr').filter({hasText: '模拟会话一'});
+    if (!(await capped.textContent()).includes('已达 50 轮上限') ||
+        await capped.locator('[data-control]').count()) {
+      throw Error('reply limit is not visible or resume is still offered');
+    }
+    const splitOrder = await page.evaluate(() => {
+      const event = data.events.find(item => item.conversation_id === selected);
+      data.outbox.push({event_id:event.id,part_index:1,text:'第二段示例',status:'mock_sent'});
+      data.outbox.push({event_id:event.id,part_index:0,text:'第一段示例',status:'mock_sent'});
+      detail(selected);
+      const content = document.querySelector('#conversationDetail').textContent;
+      return content.indexOf('第一段示例') < content.indexOf('第二段示例');
+    });
+    if (!splitOrder) throw Error('split replies are not displayed in send order');
     if (errors.length) throw Error('browser errors: ' + errors.join('; '));
     console.log(JSON.stringify({result: 'passed', checks: ['Chinese sidebar label',
-      'phone and WeChat lead labels',
+      'phone and WeChat lead labels', '50-round limit display', 'split reply display order',
       'conversation reply dialog', 'targeted existing conversation request'], submitted: false}));
   } finally {
     await browser.close();

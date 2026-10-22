@@ -212,21 +212,25 @@ pub async fn history_page(
     let (conversation, max_event, created, expires, external, account, nickname, store) =
         info.ok_or_else(|| problem(StatusCode::NOT_FOUND, "会话链接无效或已过期"))?;
     let mut stmt = db.prepare(
-        "SELECT e.direction,e.text,e.created_at,o.text,o.sent_at FROM events e
+        "SELECT e.id,e.direction,e.text,e.created_at,o.text,o.sent_at FROM events e
          LEFT JOIN outbox o ON o.event_id=e.id AND o.status IN ('accepted','mock_sent')
               AND o.sent_at<=?3
-         WHERE e.conversation_id=?1 AND e.rowid<=?2 ORDER BY e.rowid",
+         WHERE e.conversation_id=?1 AND e.rowid<=?2 ORDER BY e.rowid,o.part_index",
     )?;
     let messages = stmt.query_map(params![conversation,max_event,created], |row| {
-        Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?,row.get::<_, Option<i64>>(4)?))
+        Ok((row.get::<_, String>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,row.get::<_, Option<String>>(4)?,row.get::<_, Option<i64>>(5)?))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut transcript = String::new();
-    for (direction, body, timestamp, reply, sent_at) in messages {
-        let who = if direction == "agent" { "历史人工" } else { "客户" };
-        transcript.push_str(&format!(
-            "<div class=\"bubble customer\"><div class=\"meta\">{who} · <time data-time=\"{timestamp}\"></time></div>{}</div>",
-            html_escape(&body)));
+    let mut previous_event = String::new();
+    for (event_id, direction, body, timestamp, reply, sent_at) in messages {
+        if previous_event != event_id {
+            let who = if direction == "agent" { "历史人工" } else { "客户" };
+            transcript.push_str(&format!(
+                "<div class=\"bubble customer\"><div class=\"meta\">{who} · <time data-time=\"{timestamp}\"></time></div>{}</div>",
+                html_escape(&body)));
+            previous_event = event_id;
+        }
         if let Some(reply) = reply {
             transcript.push_str(&format!(
                 "<div class=\"bubble bot\"><div class=\"meta\">机器人 · <time data-time=\"{}\"></time></div>{}</div>",

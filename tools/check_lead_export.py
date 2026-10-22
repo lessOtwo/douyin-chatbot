@@ -85,6 +85,9 @@ def main():
                                     "你好，<script>alert(1)</script> 我的联系方式" + lead_value, 1, "processed"))
                         db.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,status,sent_at) VALUES(?,?,?,?,?,'mock_sent',unixepoch())",
                                    ("outbox" + str(index), "event" + str(index), conversation, 1, "收到，稍后店长联系您详聊。"))
+                        if index == 1:
+                            db.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,status,sent_at,part_index) VALUES(?,?,?,?,?,'mock_sent',unixepoch(),1)",
+                                       ("outbox1-second", "event1", conversation, 1, "这是同轮生成的第二条回复。"))
                         db.execute("INSERT INTO leads(id,conversation_id,event_id,kind,value) VALUES(?,?,?,?,?)",
                                    ("lead" + str(index), conversation, "event" + str(index), "phone" if index == 1 else "wechat", lead_value))
                     db.commit()
@@ -104,6 +107,8 @@ def main():
                 token = parse_qs(urlparse(link["url"]).query)["token"][0]
                 page = request(base, "/lead-history?token=" + token, authenticated=False)[0].decode("utf-8")
                 assert "模拟会话1" in page and "收到，稍后店长联系您详聊。" in page
+                assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 1
+                assert page.index("收到，稍后店长联系您详聊。") < page.index("这是同轮生成的第二条回复。")
                 assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "<script>alert(1)</script>" not in page
                 assert "模拟会话2" not in page and "=1+1+1" not in page
                 with closing(sqlite3.connect(database)) as db, db:

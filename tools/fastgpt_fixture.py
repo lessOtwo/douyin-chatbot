@@ -17,6 +17,8 @@ class Handler(BaseHTTPRequestHandler):
   if 'slow' in text:time.sleep(4)
   action='unanswered' if 'unanswered' in text else 'handoff' if 'human' in text or 'legacy-handoff' in text else 'stop' if 'stop' in text else 'reply'
   decision={'reply':'fixture reply: '+text,'action':action,'fields':{}}
+  if text == 'split-long-reply':
+   decision['reply']='你好呀，这边可以先帮你看看具体需求。关于课程内容和时间安排，我再根据你关注的方向说明清楚呢。如果还有别的问题也可以接着问我哦。'
   if action=='unanswered':decision['reason']='缺少当前商家的材料品牌资料'
   if '13800000000' in text:decision['fields']['phone']='13800000000'
   history.append({'role':'assistant','content':decision['reply']})

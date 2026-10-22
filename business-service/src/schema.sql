@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS conversations (
  customer_id TEXT NOT NULL, session_id TEXT, revision INTEGER NOT NULL DEFAULT 0,
  epoch INTEGER NOT NULL DEFAULT 0,
  mode TEXT NOT NULL DEFAULT 'bot', customer_nickname TEXT NOT NULL DEFAULT '',
- is_peer INTEGER NOT NULL DEFAULT 0, UNIQUE(account_id,external_id)
+ is_peer INTEGER NOT NULL DEFAULT 0, reply_rounds INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(account_id,external_id)
 );
 CREATE TABLE IF NOT EXISTS events (
  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, event_id TEXT NOT NULL,
@@ -18,10 +19,12 @@ CREATE TABLE IF NOT EXISTS decisions (
  event_id TEXT PRIMARY KEY REFERENCES events(id), result TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS outbox (
- id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE REFERENCES events(id),
+ id TEXT PRIMARY KEY, event_id TEXT NOT NULL REFERENCES events(id),
  conversation_id TEXT NOT NULL REFERENCES conversations(id), revision INTEGER NOT NULL,
  text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', receipt TEXT, error TEXT,
- created_at INTEGER NOT NULL DEFAULT (unixepoch()), sent_at INTEGER
+ created_at INTEGER NOT NULL DEFAULT (unixepoch()), sent_at INTEGER,
+ source TEXT NOT NULL DEFAULT 'bot', part_index INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(event_id,part_index)
 );
 CREATE TABLE IF NOT EXISTS leads (
  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id),

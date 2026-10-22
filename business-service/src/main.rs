@@ -58,6 +58,66 @@ fn active_account(app: &App, account_id: &str) -> Result<Option<Account>> {
 fn default_window() -> i64 {
     86400
 }
+const MAX_REPLY_ROUNDS: i64 = 50;
+
+fn split_reply(text: &str) -> Vec<String> {
+    let text = text.trim();
+    let length = text.chars().count();
+    if length <= 50 {
+        return vec![text.to_owned()];
+    }
+    let midpoint = length / 2;
+    let mut best: Option<(usize, usize)> = None;
+    for (index, (byte, character)) in text.char_indices().enumerate() {
+        let boundary = index + 1;
+        if boundary < 15 || length - boundary < 12 {
+            continue;
+        }
+        if !"。！？!?；;，,".contains(character) {
+            continue;
+        }
+        let score = boundary.abs_diff(midpoint) + if "，,".contains(character) { 10 } else { 0 };
+        if best.is_none_or(|(_, old_score)| score < old_score) {
+            best = Some((byte + character.len_utf8(), score));
+        }
+    }
+    let boundary = best.map(|(byte, _)| byte).unwrap_or_else(|| {
+        text.char_indices().nth(midpoint).map_or(text.len(), |(byte, _)| byte)
+    });
+    let first = text[..boundary].trim();
+    let second = text[boundary..].trim();
+    if first.is_empty() || second.is_empty() {
+        vec![text.to_owned()]
+    } else {
+        vec![first.to_owned(), second.to_owned()]
+    }
+}
+
+fn migrate_outbox_parts(db: &mut Connection) -> Result<()> {
+    let has_part_index = db.prepare("PRAGMA table_info(outbox)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter().any(|name| name == "part_index");
+    if has_part_index {
+        return Ok(());
+    }
+    let tx = db.transaction()?;
+    tx.execute_batch("CREATE TABLE outbox_new (
+        id TEXT PRIMARY KEY, event_id TEXT NOT NULL REFERENCES events(id),
+        conversation_id TEXT NOT NULL REFERENCES conversations(id), revision INTEGER NOT NULL,
+        text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', receipt TEXT, error TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()), sent_at INTEGER,
+        source TEXT NOT NULL DEFAULT 'bot', part_index INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(event_id,part_index)
+    );
+    INSERT INTO outbox_new(id,event_id,conversation_id,revision,text,status,receipt,error,created_at,sent_at,source,part_index)
+    SELECT id,event_id,conversation_id,revision,text,status,receipt,error,created_at,sent_at,source,0 FROM outbox;
+    DROP TABLE outbox;
+    ALTER TABLE outbox_new RENAME TO outbox;
+    CREATE INDEX outbox_queue ON outbox(status,created_at);")?;
+    tx.commit()?;
+    Ok(())
+}
 #[derive(Clone)]
 struct App {
     db: Arc<Mutex<Connection>>,
@@ -247,7 +307,7 @@ async fn main() -> Result<()> {
     if let Some(parent) = std::path::Path::new(&db_path).parent() {
         fs::create_dir_all(parent)?;
     }
-    let db = Connection::open(db_path)?;
+    let mut db = Connection::open(db_path)?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.execute_batch(include_str!("schema.sql"))?;
     let has_epoch = db
@@ -281,6 +341,22 @@ async fn main() -> Result<()> {
             )?;
         }
     }
+    migrate_outbox_parts(&mut db)?;
+    let has_reply_rounds = db.prepare("PRAGMA table_info(conversations)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter().any(|name| name == "reply_rounds");
+    if !has_reply_rounds {
+        db.execute("ALTER TABLE conversations ADD COLUMN reply_rounds INTEGER NOT NULL DEFAULT 0", [])?;
+        db.execute("UPDATE conversations SET reply_rounds=(
+            SELECT COUNT(DISTINCT o.event_id) FROM outbox o JOIN events e ON e.id=o.event_id
+            WHERE o.conversation_id=conversations.id AND e.status='processed'
+              AND o.source IN ('bot','bot_handoff'))", [])?;
+    }
+    db.execute("UPDATE conversations SET mode='paused' WHERE reply_rounds>=?1 AND mode='bot'", [MAX_REPLY_ROUNDS])?;
+    db.execute("UPDATE events SET status='held',error='automatic reply limit reached'
+        WHERE status='pending' AND conversation_id IN
+        (SELECT id FROM conversations WHERE reply_rounds>=?1)", [MAX_REPLY_ROUNDS])?;
     // Discard retired Typebot session mappings; preserve business history and receipts.
     db.execute(
         "UPDATE conversations SET session_id=NULL WHERE session_id IS NOT NULL",
@@ -486,7 +562,9 @@ async fn receive(
     let event = id();
     let status = if mode == "paused" { "held" } else { "pending" };
     tx.execute("INSERT INTO events(id,account_id,event_id,message_id,conversation_id,text,revision,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![event,account_id,input.event_id,input.message_id,conversation,input.text,revision,status]).map_err(anyhow::Error::from)?;
-    let cancelled = tx.execute("UPDATE outbox SET status='cancelled',error='superseded by new incoming message' WHERE conversation_id=?1 AND status='queued' AND source<>'human'", [&conversation]).map_err(anyhow::Error::from)?;
+    let cancelled = tx.execute("UPDATE outbox SET status='cancelled',error='superseded by new incoming message' WHERE conversation_id=?1 AND status='queued' AND source<>'human'
+        AND NOT (part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
+        AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))", [&conversation]).map_err(anyhow::Error::from)?;
     if cancelled > 0 {
         // FastGPT already stored the generated answer, but the customer never saw it.
         tx.execute(
@@ -527,6 +605,13 @@ async fn control(
             .map_err(anyhow::Error::from)?;
         if !exists {
             return Err(problem(StatusCode::NOT_FOUND, "unknown conversation"));
+        }
+        if mode == "bot" {
+            let rounds: i64 = tx.query_row("SELECT reply_rounds FROM conversations WHERE id=?1",
+                [&conversation], |row| row.get(0)).map_err(anyhow::Error::from)?;
+            if rounds >= MAX_REPLY_ROUNDS {
+                return Err(problem(StatusCode::CONFLICT, "本会话已达到 50 轮自动回复上限"));
+            }
         }
         let changed = tx.execute("UPDATE conversations SET mode=?1,revision=revision+1,epoch=epoch+1,session_id=NULL WHERE id=?2 AND mode<>?1", params![mode,conversation]).map_err(anyhow::Error::from)?;
         if changed > 0 {
@@ -696,6 +781,9 @@ async fn resolve_outbox(
         .map_err(anyhow::Error::from)?;
     let changed = tx.execute("UPDATE outbox SET status=?1,receipt=?2,error='resolved by operator',sent_at=CASE WHEN ?1='accepted' THEN unixepoch() ELSE sent_at END WHERE id=?3 AND status IN ('uncertain','blocked')",params![status,input.to_string(),outbox]).map_err(anyhow::Error::from)?;
     if status == "cancelled" {
+        tx.execute("UPDATE outbox SET status='cancelled',error='first reply part cancelled by operator'
+            WHERE event_id=(SELECT event_id FROM outbox WHERE id=?1) AND part_index>0 AND status='queued'",
+            [&outbox]).map_err(anyhow::Error::from)?;
         if let Some(conversation) = conversation.filter(|_| changed > 0) {
             tx.execute(
                 "UPDATE conversations SET epoch=epoch+1 WHERE id=?1",
@@ -765,9 +853,9 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         .filter(|name| !name.trim().is_empty())
         .collect();
     let project_selection_question = if projects.is_empty() {
-        "您好，请说说您想咨询的项目或需求。".to_string()
+        "你好呀～想了解什么项目或服务呢？".to_string()
     } else {
-        format!("您好，您想咨询{}还是其他相关需求？", projects.join("、"))
+        format!("你好呀～想咨询{}，还是其他相关需求呢？", projects.join("、"))
     };
     let response = app
         .client
@@ -844,7 +932,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
 async fn tick(app: &App) -> Result<()> {
     let job = {
         let db = app.db.lock().unwrap();
-        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.customer_nickname,c.is_peer FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,customer_nickname:r.get(6)?,is_peer:r.get::<_,i64>(7)?!=0})).optional()?;
+        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.customer_nickname,c.is_peer FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND c.reply_rounds<?1 AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('queued','sending','uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [MAX_REPLY_ROUNDS], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,customer_nickname:r.get(6)?,is_peer:r.get::<_,i64>(7)?!=0})).optional()?;
         if let Some(job) = &job {
             db.execute(
                 "UPDATE events SET status='processing' WHERE id=?1",
@@ -879,12 +967,12 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
     {
         let mut db = app.db.lock().unwrap();
         let tx = db.transaction()?;
-        let (revision, mode): (i64, String) = tx.query_row(
-            "SELECT revision,mode FROM conversations WHERE id=?1",
+        let (revision, mode, reply_rounds): (i64, String, i64) = tx.query_row(
+            "SELECT revision,mode,reply_rounds FROM conversations WHERE id=?1",
             [&job.conversation],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        let applied = mode == "bot" && revision == job.revision;
+        let applied = mode == "bot" && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
         if !applied && mode == "bot" {
             // A newer message superseded this answer after FastGPT saved it.
             tx.execute(
@@ -893,9 +981,13 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             )?;
         }
         if applied {
-            if !text.trim().is_empty() {
-                tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source) VALUES(?1,?2,?3,?4,?5,?6)",params![id(),job.id,job.conversation,revision,text,if decision["action"]=="stop" {"bot_handoff"} else {"bot"}])?;
+            let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
+            let source = if at_limit || decision["action"] == "stop" { "bot_handoff" } else { "bot" };
+            for (part_index, part) in split_reply(&text).iter().enumerate() {
+                tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
             }
+            tx.execute("UPDATE conversations SET reply_rounds=reply_rounds+1 WHERE id=?1", [&job.conversation])?;
             if decision["action"] == "unanswered" {
                 tx.execute("INSERT OR IGNORE INTO unanswered_questions(id,event_id,conversation_id,reason) VALUES(?1,?2,?3,?4)",params![id(),job.id,job.conversation,decision["reason"].as_str().context("missing review reason")?])?;
             }
@@ -962,17 +1054,21 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                 tx.execute("UPDATE conversations SET is_peer=1 WHERE id=?1", [&job.conversation])?;
                 tx.execute("DELETE FROM leads WHERE conversation_id=?1 AND status='candidate'", [&job.conversation])?;
             }
-            if decision["action"] == "stop" {
+            if decision["action"] == "stop" || at_limit {
                 // The acknowledgment can be sent; later incoming messages are held for manual review.
                 tx.execute(
                     "UPDATE conversations SET mode='paused' WHERE id=?1",
                     [&job.conversation],
                 )?;
+                if at_limit {
+                    tx.execute("UPDATE events SET status='held',error='automatic reply limit reached'
+                        WHERE conversation_id=?1 AND status='pending'", [&job.conversation])?;
+                }
             }
         }
         let event_status = if applied {
             "processed"
-        } else if mode == "paused" {
+        } else if mode == "paused" || reply_rounds >= MAX_REPLY_ROUNDS {
             "held"
         } else {
             "cancelled"
@@ -989,8 +1085,16 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
 async fn send_next(app: &App) -> Result<()> {
     let job: Option<(String, String, String, String, String, String, String)> = {
         let db = app.db.lock().unwrap();
-        db.execute("UPDATE outbox SET status='cancelled',error='stale conversation version' WHERE status='queued' AND (source='human' OR (source='bot' AND (revision != (SELECT revision FROM conversations WHERE id=outbox.conversation_id) OR (SELECT mode FROM conversations WHERE id=outbox.conversation_id)<>'bot')) OR (source='bot_handoff' AND revision != (SELECT revision FROM conversations WHERE id=outbox.conversation_id)))",[])?;
-        let job = db.query_row("SELECT o.id,c.account_id,c.external_id,c.customer_id,e.message_id,o.text,o.source FROM outbox o JOIN conversations c ON c.id=o.conversation_id JOIN events e ON e.id=o.event_id WHERE o.status='queued' ORDER BY o.rowid LIMIT 1",[],|r| Ok((r.get(0)?,r.get::<_,String>(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+        db.execute("UPDATE outbox SET status='cancelled',error='stale conversation version' WHERE status='queued'
+            AND NOT (part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
+            AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))
+            AND (source='human' OR (source='bot' AND (revision != (SELECT revision FROM conversations WHERE id=outbox.conversation_id)
+            OR (SELECT mode FROM conversations WHERE id=outbox.conversation_id)<>'bot'))
+            OR (source='bot_handoff' AND revision != (SELECT revision FROM conversations WHERE id=outbox.conversation_id)))",[])?;
+        let job = db.query_row("SELECT o.id,c.account_id,c.external_id,c.customer_id,e.message_id,o.text,o.source FROM outbox o JOIN conversations c ON c.id=o.conversation_id JOIN events e ON e.id=o.event_id WHERE o.status='queued'
+            AND (o.part_index=0 OR EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=o.event_id
+            AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))
+            ORDER BY o.rowid LIMIT 1",[],|r| Ok((r.get(0)?,r.get::<_,String>(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
         if let Some((id, account, _, _, _, _, _)) = &job {
             let age: i64 = db.query_row("SELECT unixepoch()-MAX(e.created_at) FROM outbox o JOIN events e ON e.conversation_id=o.conversation_id AND e.direction='customer' WHERE o.id=?1",[id],|r| r.get(0))?;
             let account_config = stored_account(&db,account)?.or_else(|| app.accounts.get(account).cloned());
@@ -1004,7 +1108,11 @@ async fn send_next(app: &App) -> Result<()> {
     let Some((id, account, conversation, customer, message, text, _source)) = job else {
         return Ok(());
     };
-    let claimed=app.db.lock().unwrap().execute("UPDATE outbox SET status='sending' WHERE id=?1 AND status='queued' AND revision=(SELECT revision FROM conversations WHERE id=outbox.conversation_id) AND (source='bot_handoff' OR (source='bot' AND (SELECT mode FROM conversations WHERE id=outbox.conversation_id)='bot'))",[&id])?;
+    let claimed=app.db.lock().unwrap().execute("UPDATE outbox SET status='sending' WHERE id=?1 AND status='queued'
+        AND ((part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
+        AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))
+        OR (revision=(SELECT revision FROM conversations WHERE id=outbox.conversation_id)
+        AND (source='bot_handoff' OR (source='bot' AND (SELECT mode FROM conversations WHERE id=outbox.conversation_id)='bot'))))",[&id])?;
     if claimed == 0 {
         return Ok(());
     }
