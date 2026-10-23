@@ -197,19 +197,19 @@ pub async fn history_page(
         return Err(problem(StatusCode::NOT_FOUND, "会话链接无效或已过期"));
     }
     let db = app.db.lock().unwrap();
-    let info: Option<(String, i64, i64, i64, String, String, String, String)> = db.query_row(
+    let info: Option<(String, i64, i64, i64, String, String, String, String, String)> = db.query_row(
         "SELECT h.conversation_id,h.max_event_rowid,h.created_at,h.expires_at,
          c.external_id,c.account_id,COALESCE(a.douyin_nickname,''),
-         COALESCE(json_extract(v.profile_json,'$.fields.\"完整门店名称\"'),'')
+         COALESCE(json_extract(v.profile_json,'$.fields.\"完整门店名称\"'),''),c.customer_nickname
          FROM lead_history_links h JOIN conversations c ON c.id=h.conversation_id
          LEFT JOIN merchant_accounts a ON a.id=c.account_id
          LEFT JOIN merchants m ON m.id=a.merchant_id
          LEFT JOIN merchant_versions v ON v.id=m.current_version_id
          WHERE h.token_hash=?1 AND h.expires_at>unixepoch()",
         [token_hash(token)], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,
-            row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)))
+            row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?)))
         .optional()?;
-    let (conversation, max_event, created, expires, external, account, nickname, store) =
+    let (conversation, max_event, created, expires, external, account, nickname, store, customer_nickname) =
         info.ok_or_else(|| problem(StatusCode::NOT_FOUND, "会话链接无效或已过期"))?;
     let mut stmt = db.prepare(
         "SELECT e.id,e.direction,e.text,e.created_at,o.text,o.sent_at FROM events e
@@ -225,10 +225,11 @@ pub async fn history_page(
     let mut previous_event = String::new();
     for (event_id, direction, body, timestamp, reply, sent_at) in messages {
         if previous_event != event_id {
-            let who = if direction == "agent" { "历史人工" } else { "客户" };
+            let who = if direction == "agent" { "历史人工".to_string() }
+                else { format!("客户：{}", if customer_nickname.trim().is_empty() { "昵称待补充" } else { customer_nickname.trim() }) };
             transcript.push_str(&format!(
-                "<div class=\"bubble customer\"><div class=\"meta\">{who} · <time data-time=\"{timestamp}\"></time></div>{}</div>",
-                html_escape(&body)));
+                "<div class=\"bubble customer\"><div class=\"meta\">{} · <time data-time=\"{timestamp}\"></time></div>{}</div>",
+                html_escape(&who), html_escape(&body)));
             previous_event = event_id;
         }
         if let Some(reply) = reply {
