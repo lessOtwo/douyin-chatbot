@@ -34,7 +34,11 @@ class Model(BaseHTTPRequestHandler):
         stopped='别再联系我' in message
         provided='13545678901' in message
         peer='你有全屋定制的装修需求吗' in message
+        promised='等我把信息整理整理发给你' in message
+        selection=message in ('你好','在吗')
         answer=("事业编培训不在本店服务范围内，这里主要提供语言培训和成人学历提升。" if '事业编' in message
+                else "你好呀～想咨询语言培训、成人学历提升，还是其他相关需求呢？" if selection
+                else "好的，您整理好发过来，我继续为您介绍。" if promised
                 else "语言培训可以咨询课程安排，具体安排需门店确认。" if '语言培训' in message
                 else "具体价格需要店里确认。" if '价格' in message
                 else "这里可以咨询语言培训或成人学历提升。")
@@ -42,6 +46,8 @@ class Model(BaseHTTPRequestHandler):
             {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else answer,
              "action":"peer" if peer else "stop" if stopped else "reply",
              "fields":{"phone":"13545678901","contact_method":"phone"} if provided
+                      else {"contact_promised":True} if promised
+                      else {"project_selection_only":True} if selection
                       else {"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
             ensure_ascii=False).encode("utf-8")
         self.send_response(200)
@@ -115,6 +121,7 @@ def main():
                             if rows and all(row[1]=='mock_sent' for row in rows):return [row[0] for row in rows]
                             time.sleep(.1)
                         raise AssertionError(f"missing outbox for {event_id}")
+                    assert "留个联系方式" not in "".join(reply("e1"))
                     replies=[]
                     for number,text in [(2,"语言培训"),(3,"先介绍一下"),(4,"我明确拒绝留联系方式"),
                                         (5,"别再联系我"),(6,"还能介绍吗"),(7,"我的号码是13545678901"),
@@ -134,6 +141,15 @@ def main():
                             assert "具体价格需要店里确认" in joined and "留个联系方式" not in joined,parts
                         assert "电话" not in joined and "微信" not in joined,parts
                     assert len(set(replies))>=4,replies
+                    for number,text in [(12,"在吗"),(13,"语言培训"),(14,"我考虑下"),
+                                        (15,"行，你等我把信息整理整理发给你"),(16,"价格多少")]:
+                        call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
+                            "conversation_id":"c4","customer_id":"u4","text":text})
+                        CAPTURE.get(timeout=10)
+                        joined="".join(reply(f"e{number}"))
+                        assert ("留个联系方式" in joined)==(number in (13,14)),joined
+                    with closing(sqlite3.connect(db_path)) as check:
+                        assert check.execute("SELECT contact_promised FROM conversations WHERE external_id='c4'").fetchone()==(1,)
                     call(base,"/api/simulate/demo",{"event_id":"e11","message_id":"m11",
                         "conversation_id":"c3","customer_id":"u3","text":"事业编培训"})
                     CAPTURE.get(timeout=10)
@@ -152,7 +168,8 @@ def main():
                         "nickname omitted from model request", "answer then ask once with varied wording",
                         "out-of-scope project answered from approved merchant profile", "refusal and stop do not suppress invitation",
                         "provided contact acknowledged then answers without asking",
-                        "nickname alone is not peer but message promotion is persistent peer"]},
+                        "nickname alone is not peer but message promotion is persistent peer",
+                        "project selection omits contact invitation", "promised later contact suppresses later invitations"]},
                         ensure_ascii=False))
                 finally:
                     service.terminate();service.wait(timeout=10)

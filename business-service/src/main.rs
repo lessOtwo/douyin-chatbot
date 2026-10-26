@@ -445,6 +445,7 @@ async fn main() -> Result<()> {
         ("conversations", "is_peer", "INTEGER NOT NULL DEFAULT 0"),
         ("conversations", "project_engaged", "INTEGER NOT NULL DEFAULT 0"),
         ("conversations", "contact_refused", "INTEGER NOT NULL DEFAULT 0"),
+        ("conversations", "contact_promised", "INTEGER NOT NULL DEFAULT 0"),
         ("events", "direction", "TEXT NOT NULL DEFAULT 'customer'"),
         ("events", "image_mime", "TEXT"),
         ("events", "image_data", "BLOB"),
@@ -1179,6 +1180,8 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         || decision["fields"]["contact_method"]
             .as_str()
             .is_some_and(|method| !["phone", "wechat", "none"].contains(&method))
+        || ["contact_promised", "project_selection_only"].iter().any(|key|
+            !decision["fields"][key].is_null() && !decision["fields"][key].is_boolean())
     {
         return Err(flow_error("invalid decision schema", content));
     }
@@ -1257,10 +1260,10 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
     {
         let mut db = app.db.lock().unwrap();
         let tx = db.transaction()?;
-        let (revision, mode, reply_rounds): (i64, String, i64) = tx.query_row(
-            "SELECT revision,mode,reply_rounds FROM conversations WHERE id=?1",
+        let (revision, mode, reply_rounds, contact_promised): (i64, String, i64, bool) = tx.query_row(
+            "SELECT revision,mode,reply_rounds,contact_promised FROM conversations WHERE id=?1",
             [&job.conversation],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let merchant_paused = merchant_paused_for_account(&tx, &job.account)?;
         let applied = mode == "bot" && !merchant_paused && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
@@ -1280,13 +1283,21 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                     decision["fields"][key].as_str().is_some_and(|value|
                         value.len() >= 5 && job.text.contains(value))
                 });
+            let promised_now = decision["fields"]["contact_promised"] == true;
+            let project_selection_only = decision["fields"]["project_selection_only"] == true;
             let text = if decision["action"] == "peer" {
                 model_reply
             } else if new_contact && !has_contact {
                 "收到，稍后店长联系您详聊。".to_string()
             } else {
-                answer_with_contact_request(&model_reply, !has_contact && !new_contact, reply_rounds)
+                answer_with_contact_request(&model_reply,
+                    !has_contact && !new_contact && !contact_promised && !promised_now
+                        && !project_selection_only, reply_rounds)
             };
+            if promised_now && decision["action"] != "peer" {
+                tx.execute("UPDATE conversations SET contact_promised=1 WHERE id=?1",
+                    [&job.conversation])?;
+            }
             let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
             let source = if at_limit { "bot_handoff" } else { "bot" };
             for (part_index, part) in split_reply(&text).iter().enumerate() {

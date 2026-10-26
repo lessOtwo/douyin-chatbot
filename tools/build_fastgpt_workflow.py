@@ -42,7 +42,7 @@ def build(model):
             {"key": "model", "renderTypeList": ["selectLLMModel", "reference"],
              "valueType": "string", "label": "模型", "value": model, "required": True},
             {"key": "systemPrompt", "renderTypeList": ["textarea", "reference"],
-             "valueType": "string", "label": "分类背景", "value": "只根据客户私信正文和历史私信判断是否为同行，不使用昵称。只有客户在正文中主动推销、招揽自己的商品或服务才归 peer，不受行业是否相同影响。客户本轮主动留下本人联系方式归 lead_provided；询问商家联系方式归 merchant_contact；拒绝留资或要求停止联系等尚未留资消息归 lead_retry；其余非同行消息归 normal。不要使用 stop。不要把询问商家号码、引用他人号码、否定留资或假设号码归为客户已留资。"},
+             "valueType": "string", "label": "分类背景", "value": "只根据客户私信正文和历史私信判断是否为同行，不使用昵称。只有客户在正文中主动推销、招揽自己的商品或服务才归 peer，不受行业是否相同影响。客户本轮主动留下本人联系方式归 lead_provided；明确答应稍后提供本人联系方式归 normal；询问商家联系方式归 merchant_contact；拒绝留资或要求停止联系等尚未留资消息归 lead_retry；其余非同行消息归 normal。不要使用 stop。不要把询问商家号码、引用他人号码、否定留资或假设号码归为客户已留资。"},
             {"key": "history", "renderTypeList": ["numberInput", "reference"],
              "valueType": "chatHistory", "label": "对话历史", "value": 20, "required": True},
             {"key": "userChatInput", "renderTypeList": ["reference", "textarea"],
@@ -102,7 +102,7 @@ def build(model):
         ai("retry_reply", "拒绝后继续答疑", 1510, 650,
            "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；如问能否做某事，先给明确结论和必要条件。不设置 contact_refused，不返回 stop，也不自行索要；未留资时业务服务会在末尾统一追加邀请。只输出约定 JSON。"),
         ai("normal_reply", "商家项目答疑", 1510, 910,
-           "先根据已审核商家资料和项目分组回答当前问题；能不能、可不可以等问题先给结论，再说必要条件和本店能提供的帮助，不要只介绍服务而漏答客户的问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。需求模糊时可用项目选择问句；识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。不自行索要联系方式，业务服务会在未留资时末尾统一追加；不返回 stop。只输出约定 JSON。"),
+           "先根据已审核商家资料和项目分组回答当前问题；能不能、可不可以等问题先给结论，再说必要条件和本店能提供的帮助，不要只介绍服务而漏答客户的问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。客户仅打招呼或需求不明时，可只用已配置的 main、available 项目拼接选择问句，并设置 fields.project_selection_only=true，此问句不附带联系方式邀请；回答或澄清具体项目时不设置。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。不自行索要联系方式，业务服务会在未留资且未承诺稍后提供时对答疑末尾统一追加；不返回 stop。只输出约定 JSON。"),
     ]
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
