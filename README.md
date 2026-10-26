@@ -20,3 +20,18 @@ Windows 一键启动：`pwsh.exe -NoLogo -Command "& 'F:/douyin-chatbot/start.ps
 “行业配置”页维护行业、项目及各项目开场问句，先保存草稿再发布；“商家入驻”页生成一次性邀请链接。商家通过链接选择行业和项目分组，填写数字抖音号、抖音昵称及门店资料。平台审核通过后自动生成账号并发布商家资料，由业务服务提供给 FastGPT；工作流应用与真实渠道授权仍需配置，入驻完成不代表机器人已启用。
 
 `Typebot/` 仅是历史源码，不参与启动。当前实施以 [PRD](docs/PRD.md) 和 [计划](docs/PLAN.md)为准。
+
+## 服务器更新业务服务
+
+服务器源码位于 `/opt/douyin-chatbot-src`；`.env` 和 `config/accounts.json` 使用现有 `/opt/douyin-chatbot` 中的运行配置，Compose 项目名保持 `douyin-chatbot` 以沿用数据卷。每次本地提交并推送到 `main` 后，在服务器执行：
+
+```bash
+cd /opt/douyin-chatbot-src
+git pull --ff-only origin main
+docker compose -f compose.server.yaml config --quiet
+docker compose -f compose.server.yaml build business-service
+docker compose -f compose.server.yaml up -d --no-deps --wait business-service
+docker compose -f compose.server.yaml ps business-service
+```
+
+FastGPT 当前继续使用固定镜像；只有其源码需要更新时才单独初始化子模块并安排构建。构建后确认服务健康，再按镜像 ID 清理无引用的 `<none>` 镜像，不清理数据卷。

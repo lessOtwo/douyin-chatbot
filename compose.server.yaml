@@ -23,6 +23,7 @@ x-fastgpt-env: &fastgpt-env
 
 services:
   business-service:
+    build: ./business-service
     image: douyin-chatbot/business-service:0.1.0
     restart: unless-stopped
     environment:

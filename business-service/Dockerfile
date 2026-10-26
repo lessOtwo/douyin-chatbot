@@ -3,6 +3,7 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY web ./web
+ARG CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,id=douyin-chatbot-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=douyin-chatbot-target,target=/build/target,sharing=locked \
     cargo build --release --locked && cp target/release/douyin-chatbot-service /build/business-service
