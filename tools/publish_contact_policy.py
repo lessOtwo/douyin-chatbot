@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "6ad7276957c1257e1bb5ed75"
-BASELINE = "0eb1740"
+BASELINE = "f2ae6fa"
 OLD = json.loads(subprocess.check_output(
     ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 PREVIOUS = json.loads(subprocess.check_output(
