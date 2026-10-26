@@ -34,7 +34,7 @@ pub async fn create_invite(State(app): State<App>, headers: HeaderMap, Json(inpu
 pub async fn list_invites(State(app): State<App>, headers: HeaderMap) -> ApiResult {
     admin_auth(&app, &headers, false)?;
     let db = app.db.lock().unwrap();
-    let mut stmt = db.prepare("SELECT id,merchant_id,status,expires_at,created_at,used_at FROM merchant_invitations ORDER BY rowid DESC LIMIT 100")?;
+    let mut stmt = db.prepare("SELECT id,merchant_id,status,expires_at,created_at,used_at FROM merchant_invitations ORDER BY rowid DESC")?;
     let items = stmt.query_map([], |r| Ok(json!({
         "id":r.get::<_,String>(0)?,"merchant_id":r.get::<_,Option<String>>(1)?,
         "status":r.get::<_,String>(2)?,"expires_at":r.get::<_,i64>(3)?,
@@ -237,7 +237,7 @@ pub async fn submit(State(app): State<App>, Json(input): Json<FormInput>) -> Api
 pub async fn list_merchants(State(app): State<App>, headers: HeaderMap) -> ApiResult {
     admin_auth(&app, &headers, false)?;
     let db = app.db.lock().unwrap();
-    let mut stmt=db.prepare("SELECT v.id,v.merchant_id,v.version,v.status,v.profile_json,v.contact_name,v.contact_phone,v.submitted_at,v.reviewed_at,v.review_reason,m.current_version_id FROM merchant_versions v JOIN merchants m ON m.id=v.merchant_id ORDER BY v.rowid DESC LIMIT 100")?;
+    let mut stmt=db.prepare("SELECT v.id,v.merchant_id,v.version,v.status,v.profile_json,v.contact_name,v.contact_phone,v.submitted_at,v.reviewed_at,v.review_reason,m.current_version_id FROM merchant_versions v JOIN merchants m ON m.id=v.merchant_id ORDER BY v.rowid DESC")?;
     let items=stmt.query_map([],|r|{
         let profile: String=r.get(4)?;
         Ok(json!({"id":r.get::<_,String>(0)?,"merchant_id":r.get::<_,String>(1)?,"version":r.get::<_,i64>(2)?,"status":r.get::<_,String>(3)?,"profile":serde_json::from_str::<Value>(&profile).unwrap_or(Value::Null),"contact_name":r.get::<_,String>(5)?,"contact_phone":r.get::<_,String>(6)?,"submitted_at":r.get::<_,i64>(7)?,"reviewed_at":r.get::<_,Option<i64>>(8)?,"review_reason":r.get::<_,String>(9)?,"current":r.get::<_,Option<String>>(10)?==Some(r.get::<_,String>(0)?)}))

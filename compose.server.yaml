@@ -1,0 +1,210 @@
+name: douyin-chatbot
+
+x-web-health: &web-health
+  test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/fastgpt').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+  interval: 10s
+  timeout: 5s
+  start_period: 120s
+  retries: 30
+
+x-fastgpt-env: &fastgpt-env
+  MONGODB_URI: mongodb://chatbot:${DATABASE_PASSWORD}@mongo:27017/fastgpt?authSource=admin&replicaSet=rs0
+  REDIS_URL: redis://default:${REDIS_PASSWORD}@redis:6379/0
+  STORAGE_VENDOR: minio
+  STORAGE_REGION: us-east-1
+  STORAGE_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  STORAGE_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  STORAGE_PUBLIC_BUCKET: fastgpt-public
+  STORAGE_PRIVATE_BUCKET: fastgpt-private
+  STORAGE_DOWNLOAD_URL_MODE: short-proxy
+  STORAGE_S3_ENDPOINT: http://minio:9000
+  STORAGE_S3_FORCE_PATH_STYLE: "true"
+  NO_PROXY: localhost,127.0.0.1,business-service,fastgpt,mongo,redis,minio,fastgpt-plugin,fastgpt-code-sandbox,aiproxy,postgres,vector
+
+services:
+  business-service:
+    image: douyin-chatbot/business-service:0.1.0
+    restart: unless-stopped
+    environment:
+      BUSINESS_API_KEY: ${BUSINESS_API_KEY:?run startup script}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?run startup script}
+      FASTGPT_URL: http://fastgpt:3000/fastgpt
+      FASTGPT_APP_KEY: ${FASTGPT_APP_KEY:-}
+      SEND_MODE: ${SEND_MODE:-mock}
+      PLATFORM_SEND_URL: ${PLATFORM_SEND_URL:-}
+      PLATFORM_SEND_KEY: ${PLATFORM_SEND_KEY:-}
+      SECURE_COOKIE: ${SECURE_COOKIE:-false}
+      ADMIN_TOOLS_AUTO_LOGIN: ${ADMIN_TOOLS_AUTO_LOGIN:-true}
+      FASTGPT_PUBLIC_URL: ${FASTGPT_PUBLIC_URL:-http://localhost:3000}
+      BUSINESS_URL: ${BUSINESS_URL:-http://localhost:8088}
+      FASTGPT_ROOT_PASSWORD: ${FASTGPT_ROOT_PASSWORD}
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${BUSINESS_PORT:-8088}:8080"]
+    volumes:
+      - business-data:/data
+      - ./config/accounts.json:/app/config/accounts.json:ro
+
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      POSTGRES_USER: chatbot
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./config/postgres-init-server.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U chatbot -d postgres"]
+      interval: 5s
+      timeout: 5s
+      start_period: 120s
+      retries: 30
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: [redis-server, --requirepass, "${REDIS_PASSWORD}", --appendonly, "yes", --maxmemory-policy, noeviction]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: [CMD-SHELL, "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  vector:
+    image: pgvector/pgvector:0.8.0-pg15
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      POSTGRES_USER: chatbot
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: fastgpt
+    volumes: [vector-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U chatbot -d fastgpt"]
+      interval: 5s
+      timeout: 5s
+      start_period: 120s
+      retries: 30
+
+  mongo:
+    image: mongo:5.0.32
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: chatbot
+      MONGO_INITDB_ROOT_PASSWORD: ${DATABASE_PASSWORD}
+    entrypoint: [bash, /mongo-entrypoint.sh]
+    volumes:
+      - mongo-data:/data/db
+      - mongo-key:/data/keys
+      - ./config/mongo-entrypoint.sh:/mongo-entrypoint.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "mongo -u chatbot -p $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval 'db.adminCommand({ping:1})' --quiet"]
+      interval: 5s
+      timeout: 5s
+      retries: 25
+      start_period: 20s
+
+  mongo-init:
+    image: mongo:5.0.32
+    restart: "no"
+    depends_on:
+      mongo: {condition: service_healthy}
+    environment:
+      MONGO_PASSWORD: ${DATABASE_PASSWORD}
+    entrypoint: [bash, -c]
+    command:
+      - >-
+        mongo --host mongo -u chatbot -p "$$MONGO_PASSWORD" --authenticationDatabase admin --eval
+        'var s; try { s=rs.status(); } catch(e) { s={ok:0}; } if (s.ok !== 1) { var r=rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]}); if (r.ok !== 1) quit(1); }' &&
+        until mongo --host mongo -u chatbot -p "$$MONGO_PASSWORD" --authenticationDatabase admin --eval 'if (!db.isMaster().ismaster) quit(1)' --quiet; do sleep 2; done
+
+  minio:
+    image: ${MINIO_IMAGE:-registry.cn-hangzhou.aliyuncs.com/fastgpt/minio:RELEASE.2025-09-07T16-13-09Z}
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address :9001
+    volumes: [minio-data:/data]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9000/minio/health/live]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  fastgpt:
+    image: douyin-chatbot/fastgpt:v4.17.2-subpath
+    restart: unless-stopped
+    healthcheck: *web-health
+    depends_on:
+      mongo-init: {condition: service_completed_successfully}
+      vector: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${FASTGPT_PORT:-3000}:3000"]
+    environment:
+      <<: *fastgpt-env
+      HOSTNAME: 0.0.0.0
+      FE_DOMAIN: ${FASTGPT_ORIGIN:-http://localhost:3000}
+      NEXT_PUBLIC_BASE_URL: /fastgpt
+      PG_URL: postgresql://chatbot:${DATABASE_PASSWORD}@vector:5432/fastgpt
+      ROOT_KEY: ${FASTGPT_SYSTEM_KEY}
+      DEFAULT_ROOT_PSW: ${FASTGPT_ROOT_PASSWORD}
+      FILE_TOKEN_KEY: ${FASTGPT_SYSTEM_KEY}
+      AES256_SECRET_KEY: ${ENCRYPTION_SECRET}
+      INVOKE_TOKEN_SECRET: ${INTERNAL_API_KEY}
+      SYNC_INDEX: "true"
+      PLUGIN_BASE_URL: http://fastgpt-plugin:3000
+      PLUGIN_TOKEN: ${FASTGPT_PLUGIN_TOKEN}
+      CODE_SANDBOX_URL: http://fastgpt-code-sandbox:3000
+      CODE_SANDBOX_TOKEN: ${FASTGPT_SANDBOX_TOKEN}
+      AIPROXY_API_ENDPOINT: http://aiproxy:3000
+      AIPROXY_API_TOKEN: ${AIPROXY_TOKEN}
+      AGENT_SANDBOX_PROVIDER: ""
+    volumes: [./config/fastgpt.json:/app/data/config.json:ro]
+
+  fastgpt-plugin:
+    image: ghcr.io/labring/fastgpt-plugin:${FASTGPT_PLUGIN_VERSION:-v1.1.4}
+    restart: unless-stopped
+    environment:
+      <<: *fastgpt-env
+      AUTH_TOKEN: ${FASTGPT_PLUGIN_TOKEN}
+    depends_on:
+      mongo-init: {condition: service_completed_successfully}
+      minio: {condition: service_healthy}
+
+  fastgpt-code-sandbox:
+    image: ghcr.io/labring/fastgpt-code-sandbox:${FASTGPT_SANDBOX_VERSION:-v4.17.0}
+    restart: unless-stopped
+    environment:
+      SANDBOX_TOKEN: ${FASTGPT_SANDBOX_TOKEN}
+      SANDBOX_POOL_SIZE: 1
+    security_opt: [no-new-privileges:true]
+
+  aiproxy:
+    image: ghcr.io/labring/aiproxy:v0.7.3
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      SQL_DSN: postgres://chatbot:${DATABASE_PASSWORD}@postgres:5432/aiproxy
+      REDIS_CONN_STRING: redis://default:${REDIS_PASSWORD}@redis:6379/2
+      ADMIN_KEY: ${AIPROXY_TOKEN}
+      BILLING_ENABLED: "false"
+      DISABLE_MODEL_CONFIG: "true"
+    volumes: [aiproxy-data:/app/logs]
+
+volumes:
+  business-data:
+  postgres-data:
+  redis-data:
+  vector-data:
+  mongo-data:
+  mongo-key:
+  minio-data:
+  aiproxy-data:

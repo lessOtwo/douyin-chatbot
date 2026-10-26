@@ -21,7 +21,9 @@
 </section></main><script>
 const token=new URLSearchParams(location.search).get('token')||'',status=document.querySelector('#status'),result=document.querySelector('#result');let catalog={industries:[],projects:[]},validated=null;
 const $=s=>document.querySelector(s),safe=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function call(path,body){const response=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});const value=await response.json();if(!response.ok)throw Error(value.error||'请求失败');return value}
+const siteBase=new URL('.',location.href);
+function sitePath(path){return new URL(path.replace(/^\//,''),siteBase).toString()}
+async function call(path,body){const response=await fetch(sitePath(path),{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'});const value=await response.json();if(!response.ok)throw Error(value.error||'请求失败');return value}
 function displayError(v){const s=String(v??'');if(s==='internal operation failed')return '提交失败，请稍后重试';return /[A-Za-z]{3,}/.test(s)&&!/[\u4e00-\u9fff]/.test(s)?'提交失败，请联系平台核对':s}
 function invalidate(){validated=null;$('#submit').disabled=true;$('#submit').style.display='none';result.innerHTML=''}
 function renderProjects(){invalidate();const list=catalog.projects.filter(p=>p.industry_id===$('#industry').value);$('#projects').innerHTML=list.length?'<div class="project header"><span>项目</span><span>主做</span><span>其他可做</span><span>不做</span><span>未选择</span></div>'+list.map(p=>'<div class="project"><span>'+safe(p.name)+'</span>'+[['main','主做'],['available','其他可做'],['excluded','不做'],['none','未选择']].map(([kind,label])=>'<label title="'+label+'"><input type="radio" name="project-'+safe(p.id)+'" value="'+kind+'" data-project="'+safe(p.id)+'" '+(kind==='none'?'checked':'')+' aria-label="'+safe(p.name)+'：'+label+'"></label>').join('')+'</div>').join(''):'<div class="muted" style="padding:15px">该行业暂无已发布项目，请联系平台配置。</div>'}

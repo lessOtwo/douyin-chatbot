@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS events (
  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, event_id TEXT NOT NULL,
  message_id TEXT NOT NULL, conversation_id TEXT NOT NULL REFERENCES conversations(id),
  text TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL,
+ image_mime TEXT, image_data BLOB, image_sha256 TEXT,
  error TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
  UNIQUE(account_id,event_id), UNIQUE(account_id,message_id)
 );
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS removed_accounts (
 );
 CREATE TABLE IF NOT EXISTS merchants (
  id TEXT PRIMARY KEY, current_version_id TEXT,
+ bot_paused INTEGER NOT NULL DEFAULT 0,
  created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS merchant_accounts (

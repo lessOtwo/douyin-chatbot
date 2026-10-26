@@ -16,16 +16,21 @@ pub struct AdminTools {
 impl AdminTools {
     pub fn from_env() -> Result<Self> {
         fn public_url(key: &str, fallback: &str) -> Result<reqwest::Url> {
-            let url = reqwest::Url::parse(&setting(key, fallback))?;
+            let mut url = reqwest::Url::parse(&setting(key, fallback))?;
             if !["http", "https"].contains(&url.scheme())
                 || url.host_str().is_none()
                 || !url.username().is_empty()
                 || url.password().is_some()
-                || url.path() != "/"
                 || url.query().is_some()
                 || url.fragment().is_some()
             {
-                bail!("{key} must be an HTTP(S) origin");
+                bail!("{key} must be an HTTP(S) URL without credentials, query or fragment");
+            }
+            // Url::join treats a path without a trailing slash as a file and
+            // would drop the /fastgpt prefix from administrator redirects.
+            if !url.path().ends_with('/') {
+                let path = format!("{}/", url.path());
+                url.set_path(&path);
             }
             Ok(url)
         }

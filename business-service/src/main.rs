@@ -1,15 +1,18 @@
 use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
+    body::Body,
     extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::Client;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -22,6 +25,7 @@ mod catalog;
 mod onboarding;
 mod unanswered;
 mod leads;
+mod admin_pages;
 
 #[derive(Clone, Deserialize)]
 struct Account {
@@ -55,10 +59,39 @@ fn active_account(app: &App, account_id: &str) -> Result<Option<Account>> {
     if removed { return Ok(None); }
     Ok(stored_account(&db, account_id)?.or_else(|| app.accounts.get(account_id).cloned()))
 }
+fn merchant_paused_for_account(db: &Connection, account_id: &str) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM merchant_accounts a JOIN merchants m ON m.id=a.merchant_id WHERE a.id=?1 AND m.bot_paused=1)",
+        [account_id], |row| row.get(0),
+    )
+}
 fn default_window() -> i64 {
     86400
 }
 const MAX_REPLY_ROUNDS: i64 = 50;
+
+fn correct_staff_title(reply: &str, industry: &str) -> String {
+    if industry == "教育教培" {
+        return reply.to_owned();
+    }
+    ["店里的老师", "店里老师", "门店老师", "店内老师"]
+        .into_iter().fold(reply.to_owned(), |text, title| text.replace(title, "店里工作人员"))
+}
+
+#[cfg(test)]
+mod staff_title_tests {
+    use super::correct_staff_title;
+
+    #[test]
+    fn preserves_education_and_corrects_other_industries() {
+        let reply = "价格要店里老师确认，方便留个电话吗？";
+        assert_eq!(correct_staff_title(reply, "教育教培"), reply);
+        assert_eq!(correct_staff_title(reply, "家政服务"),
+                   "价格要店里工作人员确认，方便留个电话吗？");
+        assert_eq!(correct_staff_title("门店老师稍后答复", "汽车用品"),
+                   "店里工作人员稍后答复");
+    }
+}
 
 fn split_reply(text: &str) -> Vec<String> {
     let text = text.trim();
@@ -141,6 +174,8 @@ struct Incoming {
     #[serde(default)]
     customer_nickname: String,
     text: String,
+    #[serde(default)]
+    image: Option<String>,
     #[serde(default = "customer")]
     direction: String,
 }
@@ -153,6 +188,8 @@ struct Job {
     account: String,
     conversation: String,
     text: String,
+    image_mime: Option<String>,
+    image_data: Option<Vec<u8>>,
     revision: i64,
     epoch: i64,
     customer_nickname: String,
@@ -182,6 +219,12 @@ impl From<rusqlite::Error> for ApiError {
 fn problem(code: StatusCode, message: &str) -> ApiError {
     ApiError(code, message.into())
 }
+fn flow_error(summary: &str, detail: &str) -> ApiError {
+    let excerpt: String = detail.chars().take(8000).collect();
+    let truncated = if detail.chars().count() > 8000 { "\n[详情已截断]" } else { "" };
+    problem(StatusCode::BAD_GATEWAY, &format!("{summary}\n\n{excerpt}{truncated}"))
+}
+
 fn setting(name: &str, fallback: &str) -> String {
     env::var(name).unwrap_or_else(|_| fallback.into())
 }
@@ -326,8 +369,12 @@ async fn main() -> Result<()> {
         ("conversations", "customer_nickname", "TEXT NOT NULL DEFAULT ''"),
         ("conversations", "is_peer", "INTEGER NOT NULL DEFAULT 0"),
         ("events", "direction", "TEXT NOT NULL DEFAULT 'customer'"),
+        ("events", "image_mime", "TEXT"),
+        ("events", "image_data", "BLOB"),
+        ("events", "image_sha256", "TEXT"),
         ("outbox", "source", "TEXT NOT NULL DEFAULT 'bot'"),
         ("merchant_versions", "review_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("merchants", "bot_paused", "INTEGER NOT NULL DEFAULT 0"),
         ("leads", "exported_at", "INTEGER"),
     ] {
         let columns = db
@@ -447,6 +494,7 @@ async fn main() -> Result<()> {
         .route("/api/invitations/{id}/revoke", post(onboarding::revoke))
         .route("/api/invitations/{id}", delete(onboarding::delete_revoked))
         .route("/api/merchants", get(onboarding::list_merchants))
+        .route("/api/merchants/{id}/bot-control", post(merchant_bot_control))
         .route(
             "/api/merchant-versions/{id}/review",
             post(onboarding::review),
@@ -456,8 +504,13 @@ async fn main() -> Result<()> {
         .route("/api/simulate/{account}", post(simulate))
         .route("/webhooks/platform/{account}", post(receive))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/admin/pages/{kind}", get(admin_pages::list))
+        .route("/api/admin/pages/history/{conversation}", get(admin_pages::history))
+        .route("/api/admin/images/{event}", get(admin_image))
+        .route("/api/admin/options/{kind}", get(admin_pages::options))
         .route("/api/leads", get(leads::list))
         .route("/api/leads/export", post(leads::export))
+        .route("/api/leads/delete", post(leads::delete))
         .route("/api/leads/{id}/history-link", post(leads::create_history_link))
         .route("/lead-history", get(leads::history_page))
         .route("/api/unanswered", get(unanswered::list))
@@ -467,8 +520,9 @@ async fn main() -> Result<()> {
         )
         .route("/api/conversations/{conversation}/control", post(control))
         .route("/api/events/{event}/cancel", post(cancel_event))
+        .route("/api/events/{event}/retry", post(retry_event))
         .route("/api/outbox/{outbox}/resolve", post(resolve_outbox))
-        .layer(DefaultBodyLimit::max(512 * 1024))
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .with_state(app);
     let bind = setting("BIND", "0.0.0.0:8080");
     println!("business-service listening on {bind}");
@@ -481,6 +535,31 @@ async fn main() -> Result<()> {
 }
 
 /// The normalized platform contract is deliberately separate from any undocumented Douyin payload.
+fn decode_image(value: Option<&str>) -> std::result::Result<Option<(String, Vec<u8>, String)>, ApiError> {
+    let Some(value) = value else { return Ok(None) };
+    let (prefix, encoded) = value.split_once(',').ok_or_else(|| problem(StatusCode::UNPROCESSABLE_ENTITY, "图片格式无效"))?;
+    let mime = match prefix {
+        "data:image/jpeg;base64" => "image/jpeg",
+        "data:image/png;base64" => "image/png",
+        "data:image/webp;base64" => "image/webp",
+        _ => return Err(problem(StatusCode::UNPROCESSABLE_ENTITY, "仅支持 JPEG、PNG、WebP 图片")),
+    };
+    if encoded.len() > 2_800_000 { return Err(problem(StatusCode::UNPROCESSABLE_ENTITY, "图片不能超过 2 MB")); }
+    let bytes = BASE64.decode(encoded).map_err(|_| problem(StatusCode::UNPROCESSABLE_ENTITY, "图片编码无效"))?;
+    if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+        return Err(problem(StatusCode::UNPROCESSABLE_ENTITY, "图片不能超过 2 MB"));
+    }
+    let valid = match mime {
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    if !valid { return Err(problem(StatusCode::UNPROCESSABLE_ENTITY, "图片内容与格式不匹配")); }
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    Ok(Some((mime.to_owned(), bytes, hash)))
+}
+
 async fn receive(
     State(app): State<App>,
     Path(account_id): Path<String>,
@@ -494,6 +573,9 @@ async fn receive(
     if input.direction != "customer" {
         return Ok(Json(json!({"ignored":true, "reason":"non-customer event"})));
     }
+    let image = decode_image(input.image.as_deref())?;
+    let text = if input.text.trim().is_empty() && image.is_some() { "[图片]" } else { input.text.as_str() };
+    let image_hash = image.as_ref().map(|(_, _, hash)| hash.as_str());
     if [
         &input.event_id,
         &input.message_id,
@@ -502,8 +584,8 @@ async fn receive(
     ]
     .iter()
     .any(|s| s.is_empty() || s.len() > 250)
-        || input.text.trim().is_empty()
-        || input.text.len() > 16000
+        || text.trim().is_empty()
+        || text.len() > 16000
         || input.customer_nickname.len() > 100
     {
         return Err(problem(
@@ -513,12 +595,12 @@ async fn receive(
     }
     let mut db = app.db.lock().unwrap();
     let tx = db.transaction().map_err(anyhow::Error::from)?;
-    let existing: Option<(String,String,String,String,String)> = tx.query_row(
-        "SELECT e.id,e.status,e.text,c.external_id,c.customer_id FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.account_id=?1 AND (e.event_id=?2 OR e.message_id=?3)",
-        params![account_id,input.event_id,input.message_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
+    let existing: Option<(String,String,String,String,String,Option<String>)> = tx.query_row(
+        "SELECT e.id,e.status,e.text,c.external_id,c.customer_id,e.image_sha256 FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.account_id=?1 AND (e.event_id=?2 OR e.message_id=?3)",
+        params![account_id,input.event_id,input.message_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
     ).optional().map_err(anyhow::Error::from)?;
-    if let Some((event, status, text, conversation, customer)) = existing {
-        if text != input.text
+    if let Some((event, status, stored_text, conversation, customer, stored_hash)) = existing {
+        if stored_text != text || stored_hash.as_deref() != image_hash
             || conversation != input.conversation_id
             || customer != input.customer_id
         {
@@ -560,8 +642,8 @@ async fn receive(
         )
         .map_err(anyhow::Error::from)?;
     let event = id();
-    let status = if mode == "paused" { "held" } else { "pending" };
-    tx.execute("INSERT INTO events(id,account_id,event_id,message_id,conversation_id,text,revision,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![event,account_id,input.event_id,input.message_id,conversation,input.text,revision,status]).map_err(anyhow::Error::from)?;
+    let status = if mode == "paused" || merchant_paused_for_account(&tx, &account_id)? { "held" } else { "pending" };
+    tx.execute("INSERT INTO events(id,account_id,event_id,message_id,conversation_id,text,revision,status,image_mime,image_data,image_sha256) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)", params![event,account_id,input.event_id,input.message_id,conversation,text,revision,status,image.as_ref().map(|(mime,_,_)| mime.as_str()),image.as_ref().map(|(_,bytes,_)| bytes.as_slice()),image_hash]).map_err(anyhow::Error::from)?;
     let cancelled = tx.execute("UPDATE outbox SET status='cancelled',error='superseded by new incoming message' WHERE conversation_id=?1 AND status='queued' AND source<>'human'
         AND NOT (part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
         AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))", [&conversation]).map_err(anyhow::Error::from)?;
@@ -577,6 +659,24 @@ async fn receive(
     Ok(Json(
         json!({"id":event,"status":status,"conversation_id":conversation,"duplicate":false}),
     ))
+}
+
+async fn admin_image(State(app): State<App>, Path(event): Path<String>, headers: HeaderMap) -> std::result::Result<Response, ApiError> {
+    admin_auth(&app, &headers, false)?;
+    let db = app.db.lock().unwrap();
+    let image: Option<(Option<String>, Option<Vec<u8>>)> = db.query_row(
+        "SELECT image_mime,image_data FROM events WHERE id=?1", [&event],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(anyhow::Error::from)?;
+    let (Some(mime), Some(bytes)) = image.ok_or_else(|| problem(StatusCode::NOT_FOUND, "图片不存在"))? else {
+        return Err(problem(StatusCode::NOT_FOUND, "图片不存在"));
+    };
+    let mime = match mime.as_str() {
+        "image/jpeg" => "image/jpeg", "image/png" => "image/png", "image/webp" => "image/webp",
+        _ => return Err(problem(StatusCode::NOT_FOUND, "图片不存在")),
+    };
+    Ok(Response::builder().header("content-type", mime).header("cache-control", "private, no-store")
+        .header("x-content-type-options", "nosniff").body(Body::from(bytes)).expect("static image headers"))
 }
 
 async fn control(
@@ -632,6 +732,47 @@ async fn control(
     ))
 }
 
+#[derive(Deserialize)]
+struct MerchantBotControl {
+    paused: bool,
+}
+
+async fn merchant_bot_control(
+    State(app): State<App>,
+    Path(merchant_id): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<MerchantBotControl>,
+) -> ApiResult {
+    admin_auth(&app, &headers, true)?;
+    let mut db = app.db.lock().unwrap();
+    let tx = db.transaction()?;
+    let changed = tx.execute(
+        "UPDATE merchants SET bot_paused=?1 WHERE id=?2 AND bot_paused<>?1",
+        params![input.paused, merchant_id],
+    )?;
+    if changed == 0 {
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM merchants WHERE id=?1)",
+            [&merchant_id], |row| row.get(0),
+        )?;
+        if !exists { return Err(problem(StatusCode::NOT_FOUND, "商家不存在")); }
+    }
+    if changed > 0 && input.paused {
+        // Invalidate a response already being generated without changing per-conversation modes.
+        tx.execute("UPDATE conversations SET revision=revision+1,epoch=epoch+1,session_id=NULL
+            WHERE account_id IN (SELECT id FROM merchant_accounts WHERE merchant_id=?1)", [&merchant_id])?;
+        tx.execute("UPDATE events SET status='held',error='merchant robot paused'
+            WHERE status='pending' AND conversation_id IN (SELECT c.id FROM conversations c
+            JOIN merchant_accounts a ON a.id=c.account_id WHERE a.merchant_id=?1)", [&merchant_id])?;
+        tx.execute("UPDATE outbox SET status='cancelled',error='merchant robot paused'
+            WHERE status='queued' AND conversation_id IN (SELECT c.id FROM conversations c
+            JOIN merchant_accounts a ON a.id=c.account_id WHERE a.merchant_id=?1)", [&merchant_id])?;
+    }
+    tx.commit()?;
+    Ok(Json(json!({"merchant_id":merchant_id,"paused":input.paused,"changed":changed>0,
+        "in_flight_requests_cannot_be_recalled":true})))
+}
+
 async fn cancel_event(
     State(app): State<App>,
     Path(event): Path<String>,
@@ -652,6 +793,57 @@ async fn cancel_event(
     }
     tx.commit().map_err(anyhow::Error::from)?;
     Ok(Json(json!({"changed":changed})))
+}
+
+async fn retry_event(
+    State(app): State<App>,
+    Path(event): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    admin_auth(&app, &headers, true)?;
+    let mut db = app.db.lock().unwrap();
+    let tx = db.transaction()?;
+    let record: Option<(String, String, String, i64, i64, String, i64, String)> = tx.query_row(
+        "SELECT e.conversation_id,e.account_id,e.status,e.revision,c.revision,c.mode,c.reply_rounds,e.direction
+         FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.id=?1",
+        [&event], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
+    ).optional()?;
+    let Some((conversation, account, status, revision, current_revision, mode, rounds, direction)) = record else {
+        return Err(problem(StatusCode::NOT_FOUND, "异常消息不存在"));
+    };
+    if !["uncertain", "blocked"].contains(&status.as_str()) || direction != "customer" {
+        return Err(problem(StatusCode::CONFLICT, "仅可重试待核对或已阻塞的客户消息，请刷新状态"));
+    }
+    if mode != "bot" || rounds >= MAX_REPLY_ROUNDS || merchant_paused_for_account(&tx, &account)? {
+        return Err(problem(StatusCode::CONFLICT, "机器人已暂停或达到回复上限，不能重试"));
+    }
+    if revision != current_revision {
+        return Err(problem(StatusCode::CONFLICT, "会话已有新消息或接待状态变更，请核对后取消旧异常"));
+    }
+    let removed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM removed_accounts WHERE id=?1)", [&account], |r| r.get(0))?;
+    if removed || (stored_account(&tx, &account)?.is_none() && !app.accounts.contains_key(&account)) {
+        return Err(problem(StatusCode::CONFLICT, "账号接入已移除，不能重试"));
+    }
+    let has_send_record: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM outbox WHERE event_id=?1)", [&event], |r| r.get(0),
+    )?;
+    if has_send_record {
+        return Err(problem(StatusCode::CONFLICT, "该消息已有发送记录，请在发送记录中核对，避免重复回复"));
+    }
+    let has_other_blocker: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE conversation_id=?1 AND id<>?2 AND status IN ('processing','uncertain','blocked'))
+         OR EXISTS(SELECT 1 FROM outbox WHERE conversation_id=?1 AND status IN ('queued','sending','uncertain','blocked'))",
+        params![conversation,event], |r| r.get(0),
+    )?;
+    if has_other_blocker {
+        return Err(problem(StatusCode::CONFLICT, "会话还有其他未处理异常或发送任务，请先核对"));
+    }
+    // The failed call may have advanced remote history. A fresh chat ID avoids reusing it.
+    tx.execute("UPDATE conversations SET epoch=epoch+1,session_id=NULL WHERE id=?1", [&conversation])?;
+    tx.execute("DELETE FROM decisions WHERE event_id=?1", [&event])?;
+    tx.execute("UPDATE events SET status='pending' WHERE id=?1", [&event])?;
+    tx.commit()?;
+    Ok(Json(json!({"id":event,"status":"pending","reset_session":true})))
 }
 
 async fn snapshot(State(app): State<App>, headers: HeaderMap) -> ApiResult {
@@ -857,6 +1049,13 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
     } else {
         format!("你好呀～想咨询{}，还是其他相关需求呢？", projects.join("、"))
     };
+    let content = match (&job.image_mime, &job.image_data) {
+        (Some(mime), Some(bytes)) => json!([
+            {"type":"text","text":input.text},
+            {"type":"image_url","image_url":{"url":format!("data:{mime};base64,{}", BASE64.encode(bytes))}}
+        ]),
+        _ => json!(input.text),
+    };
     let response = app
         .client
         .post(format!(
@@ -865,24 +1064,25 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         ))
         .bearer_auth(key)
         .json(
-            &json!({"appId":account.fastgpt_app_id,"chatId":format!("{}-{}",job.conversation,job.epoch),"stream":false,"messages":[{"role":"user","content":input.text}],
+            &json!({"appId":account.fastgpt_app_id,"chatId":format!("{}-{}",job.conversation,job.epoch),"stream":false,"messages":[{"role":"user","content":content}],
             "variables":{"merchant_id":account.merchant_id,"industry":industry,"project_selection_question":project_selection_question,"merchant_profile":merchant_profile.to_string(),"customer_nickname":job.customer_nickname}}),
         )
         .send()
         .await
-        .map_err(anyhow::Error::from)?;
-    if !response.status().is_success() {
-        return Err(problem(StatusCode::BAD_GATEWAY, "FastGPT rejected request"));
+        .map_err(|error| flow_error("模型平台请求失败", &error.to_string()))?;
+    let status = response.status();
+    let body = response.text().await
+        .map_err(|error| flow_error("模型平台响应读取失败", &error.to_string()))?;
+    if !status.is_success() {
+        return Err(flow_error("FastGPT rejected request", &format!("HTTP {status}\n{body}")));
     }
-    let raw: Value = response.json().await.map_err(anyhow::Error::from)?;
+    let raw: Value = serde_json::from_str(&body)
+        .map_err(|error| flow_error("模型平台响应不是有效 JSON", &format!("{error}\n{body}")))?;
     let content = raw["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| problem(StatusCode::BAD_GATEWAY, "FastGPT response has no content"))?;
+        .ok_or_else(|| flow_error("FastGPT response has no content", &body))?;
     let mut decision: Value = serde_json::from_str(content).map_err(|_| {
-        problem(
-            StatusCode::BAD_GATEWAY,
-            "FastGPT must return the configured decision JSON",
-        )
+        flow_error("FastGPT must return the configured decision JSON", content)
     })?;
     // Older workflows may still request handoff. There are no live agents;
     // record a review item and acknowledge the limit without inventing a queue.
@@ -903,21 +1103,23 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
             .as_str()
             .is_some_and(|method| !["phone", "wechat", "none"].contains(&method))
     {
-        return Err(problem(StatusCode::BAD_GATEWAY, "invalid decision schema"));
+        return Err(flow_error("invalid decision schema", content));
     }
     if action == "peer" {
         decision["reply"] = json!("不用呢 谢谢");
         decision["fields"] = json!({});
+    } else if industry != "教育教培" {
+        // Keep an older published prompt or a model slip from calling every shop's staff "老师".
+        if let Some(reply) = decision["reply"].as_str() {
+            decision["reply"] = json!(correct_staff_title(reply, industry));
+        }
     }
     if action == "unanswered"
         && decision["reason"]
             .as_str()
             .is_none_or(|v| v.trim().is_empty() || v.len() > 1000)
     {
-        return Err(problem(
-            StatusCode::BAD_GATEWAY,
-            "unanswered decision requires a reason up to 1000 bytes",
-        ));
+        return Err(flow_error("unanswered decision requires a reason up to 1000 bytes", content));
     }
     let db = app.db.lock().unwrap();
     db.execute(
@@ -932,7 +1134,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
 async fn tick(app: &App) -> Result<()> {
     let job = {
         let db = app.db.lock().unwrap();
-        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.customer_nickname,c.is_peer FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND c.reply_rounds<?1 AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('queued','sending','uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [MAX_REPLY_ROUNDS], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,customer_nickname:r.get(6)?,is_peer:r.get::<_,i64>(7)?!=0})).optional()?;
+        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.customer_nickname,c.is_peer,e.image_mime,e.image_data FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND c.reply_rounds<?1 AND NOT EXISTS (SELECT 1 FROM merchant_accounts a JOIN merchants m ON m.id=a.merchant_id WHERE a.id=e.account_id AND m.bot_paused=1) AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('queued','sending','uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [MAX_REPLY_ROUNDS], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,customer_nickname:r.get(6)?,is_peer:r.get::<_,i64>(7)?!=0,image_mime:r.get(8)?,image_data:r.get(9)?})).optional()?;
         if let Some(job) = &job {
             db.execute(
                 "UPDATE events SET status='processing' WHERE id=?1",
@@ -944,9 +1146,11 @@ async fn tick(app: &App) -> Result<()> {
     if let Some(job) = job {
         if let Err(error) = run_flow(app, &job).await {
             // Even a local timeout may have advanced the remote workflow.
-            app.db.lock().unwrap().execute(
-                "UPDATE events SET status='uncertain',error=?1 WHERE id=?2",
-                params![error.to_string(), job.id],
+            let db = app.db.lock().unwrap();
+            let paused = merchant_paused_for_account(&db, &job.account)?;
+            db.execute(
+                "UPDATE events SET status=?1,error=?2 WHERE id=?3 AND status='processing'",
+                params![if paused { "held" } else { "uncertain" }, error.to_string(), job.id],
             )?;
         }
     }
@@ -972,7 +1176,8 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             [&job.conversation],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        let applied = mode == "bot" && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
+        let merchant_paused = merchant_paused_for_account(&tx, &job.account)?;
+        let applied = mode == "bot" && !merchant_paused && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
         if !applied && mode == "bot" {
             // A newer message superseded this answer after FastGPT saved it.
             tx.execute(
@@ -1068,13 +1273,13 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
         }
         let event_status = if applied {
             "processed"
-        } else if mode == "paused" || reply_rounds >= MAX_REPLY_ROUNDS {
+        } else if mode == "paused" || merchant_paused || reply_rounds >= MAX_REPLY_ROUNDS {
             "held"
         } else {
             "cancelled"
         };
         tx.execute(
-            "UPDATE events SET status=?1 WHERE id=?2",
+            "UPDATE events SET status=?1,error=NULL WHERE id=?2",
             params![event_status, job.id],
         )?;
         tx.commit()?;
@@ -1085,6 +1290,10 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
 async fn send_next(app: &App) -> Result<()> {
     let job: Option<(String, String, String, String, String, String, String)> = {
         let db = app.db.lock().unwrap();
+        db.execute("UPDATE outbox SET status='cancelled',error='merchant robot paused'
+            WHERE status='queued' AND EXISTS (SELECT 1 FROM conversations c
+            JOIN merchant_accounts a ON a.id=c.account_id JOIN merchants m ON m.id=a.merchant_id
+            WHERE c.id=outbox.conversation_id AND m.bot_paused=1)", [])?;
         db.execute("UPDATE outbox SET status='cancelled',error='stale conversation version' WHERE status='queued'
             AND NOT (part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
             AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))
@@ -1109,6 +1318,8 @@ async fn send_next(app: &App) -> Result<()> {
         return Ok(());
     };
     let claimed=app.db.lock().unwrap().execute("UPDATE outbox SET status='sending' WHERE id=?1 AND status='queued'
+        AND NOT EXISTS (SELECT 1 FROM conversations c JOIN merchant_accounts a ON a.id=c.account_id
+        JOIN merchants m ON m.id=a.merchant_id WHERE c.id=outbox.conversation_id AND m.bot_paused=1)
         AND ((part_index>0 AND EXISTS(SELECT 1 FROM outbox first WHERE first.event_id=outbox.event_id
         AND first.part_index=0 AND first.status IN ('accepted','mock_sent')))
         OR (revision=(SELECT revision FROM conversations WHERE id=outbox.conversation_id)

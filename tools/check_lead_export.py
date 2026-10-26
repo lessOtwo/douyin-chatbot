@@ -134,10 +134,33 @@ def main():
                 assert sheet["C3"].hyperlink.target == values[2][2]
                 assert data(base, "/api/leads?exported=yes")["total"] == 2
                 assert data(base, "/api/leads?exported=no")["total"] == 0
+                for ids, expected in [([], 400), (["lead1", "lead1"], 400),
+                                      (["lead1", "missing"], 404)]:
+                    try:
+                        request(base, "/api/leads/delete", {"ids": ids})
+                        raise AssertionError(("invalid deletion was allowed", ids))
+                    except urllib.error.HTTPError as error:
+                        assert error.code == expected, (ids, error.code)
+                assert data(base, "/api/leads")["total"] == 2, "failed batch partly deleted leads"
+                try:
+                    request(base, "/api/leads/delete", {"ids": ["lead1"]}, authenticated=False)
+                    raise AssertionError("unauthorized deletion was allowed")
+                except urllib.error.HTTPError as error:
+                    assert error.code == 401
+                assert data(base, "/api/leads/delete", {"ids": ["lead1", "lead2"]})["deleted"] == 2
+                assert data(base, "/api/leads")["total"] == 0
+                retained = request(base, urlparse(values[1][2]).path + "?" + urlparse(values[1][2]).query,
+                                   authenticated=False)[0].decode("utf-8")
+                assert "收到，稍后店长联系您详聊。" in retained
+                with closing(sqlite3.connect(database)) as db:
+                    assert db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 2
+                    assert db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+                    assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 3
                 print(json.dumps({"result": "passed", "checks": [
                     "search by Douyin ID/nickname/store", "exported-state filter",
                     "seven-day token and expiry", "transcript escaping and conversation isolation",
-                    "three-column XLSX with literal contact strings", "export state updated"]}, ensure_ascii=False))
+                    "three-column XLSX with literal contact strings", "export state updated",
+                    "delete validation and atomicity", "delete authorization", "bulk delete retains conversations and links"]}, ensure_ascii=False))
             finally:
                 service.terminate()
                 service.wait(timeout=10)

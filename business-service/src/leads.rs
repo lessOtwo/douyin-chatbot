@@ -31,8 +31,9 @@ struct LeadRow {
     exported_at: Option<i64>,
 }
 
-fn all_rows(app: &App, db: &rusqlite::Connection) -> rusqlite::Result<Vec<LeadRow>> {
-    let mut stmt = db.prepare(
+fn selected_rows(app: &App, db: &rusqlite::Connection, ids: &[String]) -> rusqlite::Result<Vec<LeadRow>> {
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let mut stmt = db.prepare(&format!(
         "SELECT l.id,l.conversation_id,c.account_id,COALESCE(a.douyin_nickname,''),
          COALESCE(json_extract(v.profile_json,'$.fields.\"完整门店名称\"'),''),
          c.external_id,l.kind,l.value,l.status,l.created_at,l.exported_at
@@ -40,9 +41,9 @@ fn all_rows(app: &App, db: &rusqlite::Connection) -> rusqlite::Result<Vec<LeadRo
          LEFT JOIN merchant_accounts a ON a.id=c.account_id
          LEFT JOIN merchants m ON m.id=a.merchant_id
          LEFT JOIN merchant_versions v ON v.id=m.current_version_id
-         ORDER BY l.created_at DESC,l.rowid DESC",
-    )?;
-    let rows = stmt.query_map([], |row| {
+         WHERE l.id IN ({placeholders})",
+    ))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids), |row| {
         Ok(LeadRow {
             id: row.get(0)?, conversation_id: row.get(1)?, account_id: row.get(2)?,
             douyin_nickname: row.get(3)?, store_name: row.get(4)?,
@@ -67,6 +68,7 @@ pub struct ListQuery {
     search: String,
     #[serde(default)]
     exported: String,
+    page: Option<u32>,
 }
 
 pub async fn list(State(app): State<App>, headers: HeaderMap, Query(query): Query<ListQuery>) -> ApiResult {
@@ -75,16 +77,41 @@ pub async fn list(State(app): State<App>, headers: HeaderMap, Query(query): Quer
     if search.len() > 100 || !["", "all", "yes", "no"].contains(&query.exported.as_str()) {
         return Err(problem(StatusCode::BAD_REQUEST, "无效的线索筛选条件"));
     }
+    let requested=query.page.unwrap_or(1);
+    if requested==0 || requested>1_000_000 { return Err(problem(StatusCode::BAD_REQUEST,"页码无效")); }
+    let nickname_ids: Vec<&str> = app.accounts.values()
+        .filter(|account| account.douyin_nickname.to_lowercase().contains(&search.to_lowercase()))
+        .map(|account| account.id.as_str()).collect();
+    let nickname_ids=serde_json::to_string(&nickname_ids).map_err(anyhow::Error::from)?;
+    let from="FROM leads l JOIN conversations c ON c.id=l.conversation_id \
+        LEFT JOIN merchant_accounts a ON a.id=c.account_id \
+        LEFT JOIN merchants m ON m.id=a.merchant_id \
+        LEFT JOIN merchant_versions v ON v.id=m.current_version_id \
+        WHERE (?1='' OR instr(lower(c.account_id),lower(?1))>0 \
+          OR instr(lower(COALESCE(a.douyin_nickname,'')),lower(?1))>0 \
+          OR instr(lower(COALESCE(json_extract(v.profile_json,'$.fields.\"完整门店名称\"'),'')),lower(?1))>0 \
+          OR c.account_id IN (SELECT value FROM json_each(?3))) \
+        AND (?2 IN ('','all') OR (?2='yes' AND l.exported_at IS NOT NULL) \
+          OR (?2='no' AND l.exported_at IS NULL))";
     let db = app.db.lock().unwrap();
-    let rows: Vec<LeadRow> = all_rows(&app, &db)?.into_iter().filter(|row| {
-        let matches_search = search.is_empty() || [&row.account_id, &row.douyin_nickname, &row.store_name]
-            .iter().any(|field| field.to_lowercase().contains(&search.to_lowercase()));
-        let matches_exported = match query.exported.as_str() {
-            "yes" => row.exported_at.is_some(), "no" => row.exported_at.is_none(), _ => true,
-        };
-        matches_search && matches_exported
+    let total: i64=db.query_row(&format!("SELECT COUNT(*) {from}"),params![search,query.exported,nickname_ids],|r|r.get(0))?;
+    let page=(requested as i64).min(((total+19)/20).max(1));
+    let mut stmt=db.prepare(&format!("SELECT l.id,l.conversation_id,c.account_id,COALESCE(a.douyin_nickname,''),\
+        COALESCE(json_extract(v.profile_json,'$.fields.\"完整门店名称\"'),''),\
+        c.external_id,l.kind,l.value,l.status,l.created_at,l.exported_at \
+        {from} ORDER BY l.created_at DESC,l.rowid DESC LIMIT 20 OFFSET ?4"))?;
+    let rows=stmt.query_map(params![search,query.exported,nickname_ids,(page-1)*20],|r|Ok(LeadRow{
+        id:r.get(0)?,conversation_id:r.get(1)?,account_id:r.get(2)?,
+        douyin_nickname:r.get(3)?,store_name:r.get(4)?,external_id:r.get(5)?,
+        kind:r.get(6)?,value:r.get(7)?,status:r.get(8)?,created_at:r.get(9)?,exported_at:r.get(10)?,
+    }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows: Vec<LeadRow>=rows.into_iter().map(|mut row| {
+        if row.douyin_nickname.is_empty() {
+            if let Some(account)=app.accounts.get(&row.account_id) { row.douyin_nickname=account.douyin_nickname.clone(); }
+        }
+        row
     }).collect();
-    Ok(Json(json!({"items": rows, "total": rows.len()})))
+    Ok(Json(json!({"items": rows, "total": total,"page":page,"page_size":20})))
 }
 
 fn token_hash(token: &str) -> String {
@@ -125,21 +152,48 @@ pub async fn create_history_link(
 }
 
 #[derive(Deserialize)]
-pub struct ExportInput {
+pub struct SelectionInput {
     ids: Vec<String>,
 }
 
-pub async fn export(
-    State(app): State<App>, headers: HeaderMap, Json(input): Json<ExportInput>,
-) -> Result<Response, ApiError> {
-    admin_auth(&app, &headers, true)?;
-    if input.ids.is_empty() || input.ids.len() > 10_000 ||
-        input.ids.iter().any(|value| value.is_empty() || value.len() > 100) ||
-        input.ids.iter().collect::<HashSet<_>>().len() != input.ids.len() {
+fn validate_selection(ids: &[String]) -> Result<(), ApiError> {
+    if ids.is_empty() || ids.len() > 10_000 ||
+        ids.iter().any(|value| value.is_empty() || value.len() > 100) ||
+        ids.iter().collect::<HashSet<_>>().len() != ids.len() {
         return Err(problem(StatusCode::BAD_REQUEST, "请选择不超过一万条不同的线索"));
     }
+    Ok(())
+}
+
+pub async fn delete(
+    State(app): State<App>, headers: HeaderMap, Json(input): Json<SelectionInput>,
+) -> ApiResult {
+    admin_auth(&app, &headers, true)?;
+    validate_selection(&input.ids)?;
     let mut db = app.db.lock().unwrap();
-    let available: HashMap<String, LeadRow> = all_rows(&app, &db)?.into_iter()
+    let tx = db.transaction()?;
+    for lead_id in &input.ids {
+        let exists: Option<i64> = tx.query_row(
+            "SELECT 1 FROM leads WHERE id=?1", [lead_id], |row| row.get(0),
+        ).optional()?;
+        if exists.is_none() {
+            return Err(problem(StatusCode::NOT_FOUND, "所选线索不存在，请刷新列表"));
+        }
+    }
+    for lead_id in &input.ids {
+        tx.execute("DELETE FROM leads WHERE id=?1", [lead_id])?;
+    }
+    tx.commit()?;
+    Ok(Json(json!({"deleted": input.ids.len()})))
+}
+
+pub async fn export(
+    State(app): State<App>, headers: HeaderMap, Json(input): Json<SelectionInput>,
+) -> Result<Response, ApiError> {
+    admin_auth(&app, &headers, true)?;
+    validate_selection(&input.ids)?;
+    let mut db = app.db.lock().unwrap();
+    let available: HashMap<String, LeadRow> = selected_rows(&app, &db, &input.ids)?.into_iter()
         .map(|row| (row.id.clone(), row)).collect();
     let mut selected = Vec::with_capacity(input.ids.len());
     for lead_id in &input.ids {

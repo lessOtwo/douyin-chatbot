@@ -6,6 +6,7 @@ use axum::extract::Query;
 pub struct Filter {
     #[serde(default = "open")]
     status: String,
+    page: Option<u32>,
 }
 fn open() -> String {
     "open".into()
@@ -31,14 +32,18 @@ pub async fn list(
             |r| r.get(0),
         )
         .map_err(anyhow::Error::from)?;
-    let mut stmt=db.prepare("SELECT u.id,u.event_id,u.conversation_id,e.account_id,c.external_id,c.customer_id,e.text,u.reason,u.status,u.created_at,u.updated_at FROM unanswered_questions u JOIN events e ON e.id=u.event_id JOIN conversations c ON c.id=u.conversation_id WHERE ?1='all' OR u.status=?1 ORDER BY u.rowid DESC LIMIT 100").map_err(anyhow::Error::from)?;
-    let items=stmt.query_map([&filter.status],|r|Ok(json!({
+    let requested=filter.page.unwrap_or(1);
+    if requested==0 || requested>1_000_000 { return Err(problem(StatusCode::BAD_REQUEST,"页码无效")); }
+    let page=(requested as i64).min(((total+19)/20).max(1));
+    let offset=(page-1)*20;
+    let mut stmt=db.prepare("SELECT u.id,u.event_id,u.conversation_id,e.account_id,c.external_id,c.customer_id,e.text,u.reason,u.status,u.created_at,u.updated_at FROM unanswered_questions u JOIN events e ON e.id=u.event_id JOIN conversations c ON c.id=u.conversation_id WHERE ?1='all' OR u.status=?1 ORDER BY u.rowid DESC LIMIT 20 OFFSET ?2").map_err(anyhow::Error::from)?;
+    let items=stmt.query_map(params![filter.status,offset],|r|Ok(json!({
         "id":r.get::<_,String>(0)?,"event_id":r.get::<_,String>(1)?,"conversation_id":r.get::<_,String>(2)?,
         "account_id":r.get::<_,String>(3)?,"external_id":r.get::<_,String>(4)?,"customer_id":r.get::<_,String>(5)?,
         "question":r.get::<_,String>(6)?,"reason":r.get::<_,String>(7)?,"status":r.get::<_,String>(8)?,
         "created_at":r.get::<_,i64>(9)?,"updated_at":r.get::<_,i64>(10)?
     }))).map_err(anyhow::Error::from)?.collect::<std::result::Result<Vec<_>,_>>().map_err(anyhow::Error::from)?;
-    Ok(Json(json!({"items":items,"total":total,"limit":100})))
+    Ok(Json(json!({"items":items,"total":total,"page":page,"page_size":20})))
 }
 
 #[derive(Deserialize)]
