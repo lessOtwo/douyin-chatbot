@@ -57,12 +57,29 @@ def main():
         raise RuntimeError("Workflow has no published version")
     published = request("/api/core/app/version/detail?" + urllib.parse.urlencode({
         "appId": APP_ID, "versionId": version}))
-    for key in ("nodes", "edges", "chatConfig"):
+    for key in ("edges", "chatConfig"):
         if app[key] != published[key]:
             raise RuntimeError(f"Unpublished {key} changes exist; refusing to overwrite")
+    draft_nodes = {node["nodeId"]: node for node in app["nodes"]}
+    published_nodes = {node["nodeId"]: node for node in published["nodes"]}
+    if set(draft_nodes) != set(published_nodes):
+        raise RuntimeError("Unpublished workflow nodes differ; refusing to overwrite")
+    for node_id in published_nodes:
+        draft_node = copy.deepcopy(draft_nodes[node_id])
+        published_node = copy.deepcopy(published_nodes[node_id])
+        draft_node.pop("position", None)
+        published_node.pop("position", None)
+        if node_id == "peer_reply":
+            draft_text = node_input(draft_node, "text")
+            published_text = node_input(published_node, "text")
+            if draft_text.get("value") != published_text.get("value"):
+                raise RuntimeError("Unpublished peer reply differs; refusing to overwrite")
+            draft_node["inputs"][draft_node["inputs"].index(draft_text)] = published_text
+        if draft_node != published_node:
+            raise RuntimeError(f"Unpublished {node_id} behavior differs; refusing to overwrite")
     if OLD["edges"] != NEW["edges"] or set(node["nodeId"] for node in OLD["nodes"]) != set(node["nodeId"] for node in NEW["nodes"]):
         raise RuntimeError("Source workflow topology changed")
-    target = copy.deepcopy(published)
+    target = copy.deepcopy(app)
     old_nodes = {node["nodeId"]: node for node in OLD["nodes"]}
     previous_nodes = {node["nodeId"]: node for node in PREVIOUS["nodes"]}
     new_nodes = {node["nodeId"]: node for node in NEW["nodes"]}
@@ -153,7 +170,7 @@ def main():
     if backup_path.exists():
         raise RuntimeError(f"Backup already exists: {backup_path}")
     backup_path.write_text(json.dumps({"previous_version_id": version,
-        "previous_workflow": published}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        "previous_workflow": published, "previous_draft": app}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     payload = {"nodes": target["nodes"], "edges": target["edges"],
                "chatConfig": target["chatConfig"]}
     request("/api/core/app/version/publish?" + query, {
