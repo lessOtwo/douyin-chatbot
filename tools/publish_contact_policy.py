@@ -137,7 +137,10 @@ def main():
     if not args.apply:
         return
     BACKUP.parent.mkdir(exist_ok=True)
-    BACKUP.write_text(json.dumps({"previous_version_id": version,
+    backup_path = BACKUP.with_name(f"fastgpt-contact-policy-backup-{version}.json")
+    if backup_path.exists():
+        raise RuntimeError(f"Backup already exists: {backup_path}")
+    backup_path.write_text(json.dumps({"previous_version_id": version,
         "previous_workflow": published}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     payload = {"nodes": target["nodes"], "edges": target["edges"],
                "chatConfig": target["chatConfig"]}
@@ -156,7 +159,7 @@ def main():
         "appId": APP_ID, "versionId": new_version}))
     if any(actual[key] != payload[key] for key in payload):
         raise RuntimeError("Published policy differs from requested version")
-    print(f"Verified published version {new_version}; backup: {BACKUP}")
+    print(f"Verified published version {new_version}; backup: {backup_path}")
 
 
 if __name__ == "__main__":
