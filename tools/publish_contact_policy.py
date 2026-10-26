@@ -17,6 +17,8 @@ APP_ID = "6ad7276957c1257e1bb5ed75"
 BASELINE = "4d921f4"
 OLD = json.loads(subprocess.check_output(
     ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
+PREVIOUS = json.loads(subprocess.check_output(
+    ["git", "show", "24aa075:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 NEW = json.loads((ROOT / "config/fastgpt-lead-workflow.json").read_text(encoding="utf-8"))
 BACKUP = ROOT / "artifacts/fastgpt-contact-policy-backup.json"
 
@@ -62,6 +64,7 @@ def main():
         raise RuntimeError("Source workflow topology changed")
     target = copy.deepcopy(published)
     old_nodes = {node["nodeId"]: node for node in OLD["nodes"]}
+    previous_nodes = {node["nodeId"]: node for node in PREVIOUS["nodes"]}
     new_nodes = {node["nodeId"]: node for node in NEW["nodes"]}
     live_nodes = {node["nodeId"]: node for node in target["nodes"]}
     before_paragraphs = subprocess.check_output(["git", "show",
@@ -75,18 +78,21 @@ def main():
     changed = []
     for node_id in old_nodes:
         old_inputs = {item["key"]: item["value"] for item in old_nodes[node_id]["inputs"] if "value" in item}
+        previous_inputs = {item["key"]: item["value"] for item in previous_nodes[node_id]["inputs"] if "value" in item}
         new_inputs = {item["key"]: item["value"] for item in new_nodes[node_id]["inputs"] if "value" in item}
         for key in old_inputs.keys() & new_inputs.keys():
             if old_inputs[key] == new_inputs[key]:
                 continue
             live = node_input(live_nodes[node_id], key)
             if key == "agents" and node_id == "lead_intent":
-                old_peer = next(item["value"] for item in old_inputs[key] if item["key"] == "peer")
-                new_peer = next(item["value"] for item in new_inputs[key] if item["key"] == "peer")
-                peer = next(item for item in live["value"] if item["key"] == "peer")
-                if peer["value"] not in (old_peer, new_peer):
-                    raise RuntimeError("Published peer agent differs from baseline")
-                peer["value"] = new_peer
+                for agent in new_inputs[key]:
+                    name = agent["key"]
+                    old_value = next(item["value"] for item in old_inputs[key] if item["key"] == name)
+                    previous_value = next(item["value"] for item in previous_inputs[key] if item["key"] == name)
+                    current_agent = next(item for item in live["value"] if item["key"] == name)
+                    if current_agent["value"] not in (old_value, previous_value, agent["value"]):
+                        raise RuntimeError(f"Published {name} agent differs from baseline")
+                    current_agent["value"] = agent["value"]
             elif key == "systemPrompt" and node_id != "lead_intent":
                 current = live["value"]
                 for index, (before, after) in enumerate(zip(before_paragraphs, after_paragraphs)):
@@ -115,7 +121,7 @@ def main():
                     current = current.replace(old_extra, new_extra, 1)
                 live["value"] = current
             else:
-                if live["value"] not in (old_inputs[key], new_inputs[key]):
+                if live["value"] not in (old_inputs[key], previous_inputs[key], new_inputs[key]):
                     raise RuntimeError(f"Published {node_id}.{key} differs from baseline")
                 live["value"] = new_inputs[key]
             changed.append(f"{node_id}.{key}")
