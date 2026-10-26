@@ -34,8 +34,12 @@ class Model(BaseHTTPRequestHandler):
         stopped='别再联系我' in message
         provided='13545678901' in message
         peer='你有全屋定制的装修需求吗' in message
+        answer=("事业编培训不在本店服务范围内，这里主要提供语言培训和成人学历提升。" if '事业编' in message
+                else "语言培训可以咨询课程安排，具体安排需门店确认。" if '语言培训' in message
+                else "具体价格需要店里确认。" if '价格' in message
+                else "这里可以咨询语言培训或成人学历提升。")
         body=json.dumps({"choices":[{"message":{"content":json.dumps(
-            {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else "好的，可以继续咨询。",
+            {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else answer,
              "action":"peer" if peer else "stop" if stopped else "reply",
              "fields":{"phone":"13545678901","contact_method":"phone"} if provided
                       else {"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
@@ -118,24 +122,23 @@ def main():
                         call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
                             "conversation_id":"c1","customer_id":"u1","text":text})
                         CAPTURE.get(timeout=10)
-                        if number == 8:
-                            for _ in range(100):
-                                with closing(sqlite3.connect(db_path)) as check:
-                                    status=check.execute("SELECT status FROM events WHERE event_id='e8'").fetchone()
-                                    count=check.execute("SELECT COUNT(*) FROM outbox o JOIN events e ON e.id=o.event_id WHERE e.event_id='e8'").fetchone()[0]
-                                if status and status[0]=='processed': break
-                                time.sleep(.1)
-                            assert status and status[0]=='processed' and count==0,(status,count)
-                            break
                         parts=reply(f"e{number}")
                         joined="".join(parts)
                         if number < 7:
-                            assert len(parts)==1 and joined.count("留个联系方式")==1,parts
-                            replies.append(joined)
-                        else:
+                            assert joined.count("留个联系方式")==1 and "留个联系方式" in parts[-1],parts
+                            assert "不再联系" not in joined,parts
+                            replies.append(joined[joined.index("留个联系方式")-3:])
+                        elif number == 7:
                             assert joined=="收到，稍后店长联系您详聊。",parts
+                        else:
+                            assert "具体价格需要店里确认" in joined and "留个联系方式" not in joined,parts
                         assert "电话" not in joined and "微信" not in joined,parts
-                    assert len(set(replies))==4,replies
+                    assert len(set(replies))>=4,replies
+                    call(base,"/api/simulate/demo",{"event_id":"e11","message_id":"m11",
+                        "conversation_id":"c3","customer_id":"u3","text":"事业编培训"})
+                    CAPTURE.get(timeout=10)
+                    out_of_scope="".join(reply("e11"))
+                    assert "事业编培训不在本店服务范围" in out_of_scope and "留个联系方式" in out_of_scope,out_of_scope
                     call(base,"/api/simulate/demo",{"event_id":"e9","message_id":"m9",
                         "conversation_id":"c2","customer_id":"u2","customer_nickname":"全屋定制联系我",
                         "text":"你有全屋定制的装修需求吗？有的话联系我"})
@@ -146,8 +149,9 @@ def main():
                     assert reply("e10")==["不用呢 谢谢"]
                     print(json.dumps({"result":"passed","checks":["one-turn message",
                         "approved project snapshot injected","non-public phone excluded",
-                        "nickname omitted from model request", "all non-peer turns ask with varied wording",
-                        "refusal and stop model output ignored", "provided contact acknowledged once then no outbound reply",
+                        "nickname omitted from model request", "answer then ask once with varied wording",
+                        "out-of-scope project answered from approved merchant profile", "refusal and stop do not suppress invitation",
+                        "provided contact acknowledged then answers without asking",
                         "nickname alone is not peer but message promotion is persistent peer"]},
                         ensure_ascii=False))
                 finally:

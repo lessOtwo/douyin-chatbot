@@ -136,12 +136,44 @@ fn solicitation_reply(round: i64) -> &'static str {
     PHRASES[round.rem_euclid(PHRASES.len() as i64) as usize]
 }
 
+fn answer_with_contact_request(reply: &str, ask: bool, round: i64) -> String {
+    let mut text = reply.trim()
+        .replace("电话或微信", "联系方式")
+        .replace("电话/微信", "联系方式")
+        .replace("电话／微信", "联系方式")
+        .replace("电话号码", "联系方式")
+        .replace("微信号", "联系方式")
+        .replace("手机号", "联系方式")
+        .replace("电话", "联系方式")
+        .replace("微信", "联系方式")
+        .replace("留下联系方式", "留个联系方式")
+        .replace("留一下联系方式", "留个联系方式");
+    if let Some(position) = text.find("留个联系方式") {
+        let start = text[..position].rfind(['。', '！', '？', '!', '?', '；', ';', '，', ','])
+            .map_or(0, |index| index + text[index..].chars().next().unwrap().len_utf8());
+        let end = text[position..].find(['。', '！', '？', '!', '?'])
+            .map_or(text.len(), |offset| position + offset + text[position + offset..].chars().next().unwrap().len_utf8());
+        let before = text[..start].trim_end_matches(['，', ',', '。', '；', ';']).trim();
+        let after = text[end..].trim();
+        text = [before, after].into_iter().filter(|part| !part.is_empty())
+            .collect::<Vec<_>>().join("。");
+    }
+    if text.is_empty() {
+        text = "您想了解哪个项目？".to_string();
+    }
+    if !text.ends_with(['。', '！', '？', '!', '?']) { text.push('。'); }
+    if ask {
+        text.push_str(solicitation_reply(round));
+    }
+    text
+}
+
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{solicitation_reply, split_reply};
+    use super::{answer_with_contact_request, solicitation_reply, split_reply};
 
     #[test]
-    fn each_round_only_asks_for_contact_with_varied_wording() {
+    fn each_unqualified_round_asks_for_contact_with_varied_wording() {
         let replies: Vec<_> = (0..4).map(solicitation_reply).collect();
         assert_eq!(replies.iter().collect::<std::collections::HashSet<_>>().len(), 4);
         for reply in replies {
@@ -151,10 +183,22 @@ mod contact_policy_tests {
     }
 
     #[test]
-    fn solicitation_does_not_split_into_extra_messages() {
-        for round in 0..4 {
-            assert_eq!(split_reply(solicitation_reply(round)).len(), 1);
-        }
+    fn answer_then_ask_once_in_final_split_part() {
+        let reply = answer_with_contact_request(
+            "事业编培训暂不在本店服务范围内，主要提供语言培训和成人学历提升。方便留个电话或微信吗？",
+            true, 1);
+        let parts = split_reply(&reply);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].contains("暂不在本店服务范围"));
+        assert_eq!(reply.matches("留个联系方式").count(), 1);
+        assert!(parts[1].contains("留个联系方式"));
+        assert!(!reply.contains("电话") && !reply.contains("微信"));
+    }
+
+    #[test]
+    fn after_contact_answer_without_asking() {
+        let reply = answer_with_contact_request("成人学历提升可咨询学习安排。方便留个联系方式吗？", false, 3);
+        assert_eq!(reply, "成人学历提升可咨询学习安排。");
     }
 }
 
@@ -1142,8 +1186,10 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         decision["reply"] = json!("不用呢 谢谢");
         decision["fields"] = json!({});
     } else {
-        // The workflow may still return an older stop or answer decision.
-        // Peer detection and lead fields are useful; every other turn solicits contact.
+        // An older workflow may still choose stop; keep the conversation active.
+        if action == "stop" {
+            decision["reply"] = json!("您想了解哪个项目？");
+        }
         decision["action"] = json!("reply");
         decision.as_object_mut().unwrap().remove("reason");
     }
@@ -1235,21 +1281,17 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                         value.len() >= 5 && job.text.contains(value))
                 });
             let text = if decision["action"] == "peer" {
-                Some(model_reply.as_str())
-            } else if has_contact {
-                None
-            } else if new_contact {
-                Some("收到，稍后店长联系您详聊。")
+                model_reply
+            } else if new_contact && !has_contact {
+                "收到，稍后店长联系您详聊。".to_string()
             } else {
-                Some(solicitation_reply(reply_rounds))
+                answer_with_contact_request(&model_reply, !has_contact && !new_contact, reply_rounds)
             };
             let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
             let source = if at_limit { "bot_handoff" } else { "bot" };
-            if let Some(text) = text {
-                for (part_index, part) in split_reply(text).iter().enumerate() {
-                    tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                        params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
-                }
+            for (part_index, part) in split_reply(&text).iter().enumerate() {
+                tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
             }
             tx.execute("UPDATE conversations SET reply_rounds=reply_rounds+1 WHERE id=?1", [&job.conversation])?;
             // Candidate only: does not assert verification, CRM delivery or successful contact.

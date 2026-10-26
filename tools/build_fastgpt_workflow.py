@@ -50,10 +50,10 @@ def build(model):
             {"key": "agents", "renderTypeList": ["custom"], "valueType": "any", "label": "分类",
              "value": [
                  {"key": "peer", "value": "客户私信正文主动推销或招揽自己的商家、服务业务，即使与当前商家行业不同也归此类；不得依据昵称判断"},
-                 {"key": "stop", "value": "不使用此分类；停止联系请求也作为非同行消息继续邀请留资"},
+                {"key": "stop", "value": "不使用此分类；停止联系请求按非同行消息继续答疑，由业务服务在未留资时追加邀请"},
                  {"key": "lead_provided", "value": "客户本轮明确留下本人电话或微信，例如‘我的电话是13800000000’或‘我的微信是abc12345’"},
                  {"key": "merchant_contact", "value": "客户询问商家微信或电话号码"},
-                 {"key": "lead_retry", "value": "尚未留资客户拒绝留资、要求停止联系、犹豫或要求别再问；仍继续索要联系方式"},
+                {"key": "lead_retry", "value": "尚未留资客户拒绝留资、要求停止联系、犹豫或要求别再问；仍继续答疑，由业务服务在末尾追加联系方式邀请"},
                  {"key": "normal", "value": "其余非同行消息，包括普通咨询、询价、项目问题或已留资后的联系渠道更正"},
              ]},
         ],
@@ -76,12 +76,12 @@ def build(model):
         return node
 
     stop = {
-        "nodeId": "stop_reply", "name": "非同行留资兜底", "intro": "若分类误入此分支仍邀请留资",
+        "nodeId": "stop_reply", "name": "非同行答疑兜底", "intro": "若分类误入此分支仍继续会话",
         "avatar": "core/workflow/template/reply", "flowNodeType": "answerNode",
         "position": {"x": 1510, "y": -120},
         "inputs": [{"key": "text", "renderTypeList": ["textarea", "reference"],
                     "valueType": "any", "label": "回复内容", "required": True,
-                    "value": '{"reply":"方便留个联系方式吗？","action":"reply","fields":{}}'}],
+                    "value": '{"reply":"您想了解哪个项目？","action":"reply","fields":{}}'}],
         "outputs": [],
     }
     peer = {
@@ -97,12 +97,12 @@ def build(model):
         start, classify, peer, stop,
         ai("lead_received_reply", "首次留资确认", 1510, 130,
            "客户本轮明确主动留下本人联系方式。只输出约定 JSON：reply 必须逐字为‘收到，稍后店长联系您详聊。’，action=reply；fields 中的 phone 和/或 wechat 只取本轮本人主动留下的原文，并给出 contact_method。客户说‘不要打电话’或‘加我微信’且只留下手机号时，phone 保留手机号、contact_method=wechat，不要伪造独立微信号。不得提取引用、否定或第三方联系方式。不要追加问题或解释。"),
-        ai("contact_reply", "索取商家联系方式后留资", 1510, 390,
-           "客户询问商家联系方式时，不提供商家号码，也不答疑。客户尚未留资就换一种简短说法邀请‘留个联系方式’，action=reply；已留资则仅返回结构化 reply 供业务服务处理。不要说电话或微信。只输出约定 JSON。"),
-        ai("retry_reply", "拒绝后继续留资", 1510, 650,
-           "客户尚未留资时，即使明确拒绝、犹豫或要求停止联系，也只换一种简短说法邀请‘留个联系方式’；不答疑，不设置 contact_refused，不返回 stop。不要说电话或微信。只输出约定 JSON。"),
-        ai("normal_reply", "非同行留资邀请", 1510, 910,
-           "客户尚未留资时，不论是否提到配置项目，都只换一种简短说法邀请‘留个联系方式’，不答疑或澄清。已留资后的渠道更正可返回 contact_method、contact_value，由业务服务更新线索且不再发送答疑。不要设置 contact_refused 或返回 stop；回复中不要出现电话、微信二词。只输出约定 JSON。"),
+        ai("contact_reply", "商家联系方式答疑", 1510, 390,
+           "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。不自行索要客户联系方式，业务服务会在未留资时统一追加。回复不出现电话、微信二词。只输出约定 JSON。"),
+        ai("retry_reply", "拒绝后继续答疑", 1510, 650,
+           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复，不设置 contact_refused，不返回 stop，也不自行索要；未留资时业务服务会在末尾统一追加邀请。只输出约定 JSON。"),
+        ai("normal_reply", "商家项目答疑", 1510, 910,
+           "先根据已审核商家资料和项目分组回答当前问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。需求模糊时可用项目选择问句；识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。不自行索要联系方式，业务服务会在未留资时末尾统一追加；不返回 stop。只输出约定 JSON。"),
     ]
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
@@ -120,7 +120,7 @@ def build(model):
         ]
     ]}
     return {"name": "抖音私信留资工作流（草稿）", "type": "advanced",
-            "intro": "仅按私信正文识别同行，其余未留资消息轮换索要联系方式",
+            "intro": "按已审核项目资料答疑，未留资时在末尾邀请留下联系方式",
             "nodes": nodes, "edges": edges, "chatConfig": chat_config}
 
 
@@ -256,30 +256,30 @@ def install_draft(flow, base, model, smoke_test=False):
             return decision
 
         lead = run_smoke("青岛的老房翻新，大约90平，想拿项目清单，怎么获取？")
-        if lead["action"] != "reply" or "留个联系方式" not in lead["reply"]:
-            raise RuntimeError("FastGPT smoke test did not ask for customer contact: " + repr(lead))
+        if lead["action"] != "reply" or not any(word in lead["reply"] for word in ("老房", "翻新")):
+            raise RuntimeError("FastGPT smoke test did not answer project inquiry: " + repr(lead))
         vague = run_smoke("你好", "script-project-vague-" + uuid.uuid4().hex)
-        if vague["action"] != "reply" or "留个联系方式" not in vague["reply"]:
-            raise RuntimeError("FastGPT smoke test did not ask on vague inquiry: " + repr(vague))
+        if vague["action"] != "reply" or not any(word in vague["reply"] for word in ("新房装修", "老房翻新")):
+            raise RuntimeError("FastGPT smoke test did not offer configured projects: " + repr(vague))
         specific = run_smoke("我想了解老房翻新", "script-project-specific-" + uuid.uuid4().hex)
-        if specific["action"] != "reply" or "留个联系方式" not in specific["reply"]:
-            raise RuntimeError("FastGPT smoke test did not ask on project inquiry: " + repr(specific))
+        if specific["action"] != "reply" or "老房翻新" not in specific["reply"]:
+            raise RuntimeError("FastGPT smoke test did not answer matched project: " + repr(specific))
         provided = run_smoke("我的电话是13800000000")
         if (provided["action"] != "reply" or provided["reply"] != "收到，稍后店长联系您详聊。" or
                 provided.get("fields", {}).get("phone") != "13800000000"):
             raise RuntimeError("FastGPT smoke test did not acknowledge and extract customer contact: " + repr(provided))
         stopped = run_smoke("不要再联系我")
-        if stopped["action"] != "reply" or "留个联系方式" not in stopped["reply"]:
-            raise RuntimeError("FastGPT smoke test did not continue solicitation: " + repr(stopped))
+        if stopped["action"] != "reply" or "不再联系" in stopped["reply"]:
+            raise RuntimeError("FastGPT smoke test stopped instead of continuing: " + repr(stopped))
         SMOKE_RECORD.parent.mkdir(parents=True, exist_ok=True)
         SMOKE_RECORD.write_text(json.dumps({
             "date": date.today().isoformat(), "result": "passed",
             "appId": app_id, "model": model, "scope": "local FastGPT chatTest draft, three turns on one chatId plus two separate project scenarios",
-            "checks": ["vague and project inquiry solicit contact", "provided contact acknowledged and extracted", "stop request still solicits contact"],
+            "checks": ["vague and project inquiry answered from configured projects", "provided contact acknowledged and extracted", "stop request did not stop"],
             "published": False, "business_service_bound": False,
             "real_channel_verified": False, "full_tests_run": False,
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print("FastGPT smoke test passed: non-peer solicitation, contact acknowledgement and continued solicitation after stop request")
+        print("FastGPT smoke test passed: configured project answers, contact acknowledgement and continued conversation after stop request")
     return app_id
 
 

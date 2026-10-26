@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "6ad7276957c1257e1bb5ed75"
-BASELINE = "a7f024b"
+BASELINE = "0eb1740"
 OLD = json.loads(subprocess.check_output(
     ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 PREVIOUS = json.loads(subprocess.check_output(
@@ -162,7 +162,7 @@ def main():
     if any(draft[key] != payload[key] for key in payload):
         raise RuntimeError("FastGPT draft did not retain policy changes")
     request("/api/core/app/version/publish?" + query, {
-        **payload, "isPublish": True, "versionName": "非同行持续留资邀请"})
+        **payload, "isPublish": True, "versionName": "商家项目答疑与留资邀请"})
     new_app = request("/api/core/app/detail?" + query)
     new_version = new_app.get("publishedVersionId")
     if not new_version or new_version == version:
