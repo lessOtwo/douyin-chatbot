@@ -100,6 +100,8 @@ def main():
                     elif index == 9:
                         before_fields = "可包含 need_type、city、area、phone、wechat、contact_method、contact_value。"
                         after_fields = "可包含 need_type、city、area、phone、wechat、contact_method、contact_value、contact_refused。识别出配置项目时 need_type 必须是该项目的准确名称；仅当客户明确拒绝留资时 contact_refused=true，犹豫或含糊时不要设置。"
+                        if after_fields in current:
+                            continue
                         if current.count(before_fields) != 1:
                             raise RuntimeError(f"Published {node_id} fields paragraph differs from baseline")
                         current = current.replace(before_fields, after_fields, 1)
