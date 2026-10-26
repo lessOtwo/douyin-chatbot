@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS conversations (
  epoch INTEGER NOT NULL DEFAULT 0,
  mode TEXT NOT NULL DEFAULT 'bot', customer_nickname TEXT NOT NULL DEFAULT '',
  is_peer INTEGER NOT NULL DEFAULT 0, reply_rounds INTEGER NOT NULL DEFAULT 0,
+ project_engaged INTEGER NOT NULL DEFAULT 0, contact_refused INTEGER NOT NULL DEFAULT 0,
  UNIQUE(account_id,external_id)
 );
 CREATE TABLE IF NOT EXISTS events (

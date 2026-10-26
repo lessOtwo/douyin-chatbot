@@ -29,8 +29,10 @@ class Model(BaseHTTPRequestHandler):
     def do_POST(self):
         data=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         CAPTURE.put(data)
+        refused='明确拒绝留联系方式' in data['messages'][0]['content']
         body=json.dumps({"choices":[{"message":{"content":json.dumps(
-            {"reply":"您好，请说说需求。","action":"reply","fields":{}},ensure_ascii=False)}}]},
+            {"reply":"好的，可以继续咨询。" if refused else "您好，请说说需求。",
+             "action":"reply","fields":{"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
             ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type","application/json")
@@ -84,20 +86,40 @@ def main():
                         except (OSError,urllib.error.URLError):time.sleep(.1)
                     else:raise AssertionError("service failed to start")
                     call(base,"/api/simulate/demo",{"event_id":"e1","message_id":"m1",
-                        "conversation_id":"c1","customer_id":"u1","text":"你好"})
+                        "conversation_id":"c1","customer_id":"u1","customer_nickname":"全屋定制联系我","text":"你好"})
                     request=CAPTURE.get(timeout=10)
                     variables=request["variables"]
                     assert request["messages"]==[{"role":"user","content":"你好"}]
                     assert request["appId"]=="fixture-app" and request["chatId"]
-                    assert variables["project_selection_question"]=="您好，您想咨询语言培训、成人学历提升还是其他相关需求？"
+                    assert variables["project_selection_question"]=="你好呀～想咨询语言培训、成人学历提升，还是其他相关需求呢？"
                     assert "职业资格考证" not in variables["project_selection_question"]
                     sent_profile=json.loads(variables["merchant_profile"])
                     assert len(sent_profile["projects"]["main"])==1
                     assert "门店联系电话" not in sent_profile["fields"]
                     assert variables["industry"]=="教育教培"
+                    assert "customer_nickname" not in variables
+                    def reply(event_id):
+                        for _ in range(100):
+                            with closing(sqlite3.connect(db_path)) as check:
+                                rows=check.execute("SELECT o.text,o.status FROM outbox o JOIN events e ON e.id=o.event_id WHERE e.event_id=? ORDER BY o.part_index",(event_id,)).fetchall()
+                            if rows and all(row[1]=='mock_sent' for row in rows):return [row[0] for row in rows]
+                            time.sleep(.1)
+                        raise AssertionError(f"missing outbox for {event_id}")
+                    for number,text in [(2,"语言培训"),(3,"先介绍一下"),(4,"我明确拒绝留联系方式"),(5,"还能介绍吗")]:
+                        call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
+                            "conversation_id":"c1","customer_id":"u1","text":text})
+                        CAPTURE.get(timeout=10)
+                        parts=reply(f"e{number}")
+                        joined="".join(parts)
+                        if number in (2,3):
+                            assert joined.count("留个联系方式")==1 and "留个联系方式" in parts[-1],parts
+                        else:
+                            assert "留个联系方式" not in joined,parts
+                        assert "电话" not in joined and "微信" not in joined,parts
                     print(json.dumps({"result":"passed","checks":["one-turn message",
                         "approved project snapshot injected","non-public phone excluded",
-                        "generic question lists main then available projects and excludes unavailable ones"]},
+                        "nickname omitted from model request", "configured project and later turns ask once",
+                        "explicit refusal persists", "generic question lists main then available projects and excludes unavailable ones"]},
                         ensure_ascii=False))
                 finally:
                     service.terminate();service.wait(timeout=10)

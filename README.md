@@ -21,17 +21,6 @@ Windows 一键启动：`pwsh.exe -NoLogo -Command "& 'F:/douyin-chatbot/start.ps
 
 `Typebot/` 仅是历史源码，不参与启动。当前实施以 [PRD](docs/PRD.md) 和 [计划](docs/PLAN.md)为准。
 
-## 服务器更新业务服务
+## 业务服务更新
 
-服务器源码位于 `/opt/douyin-chatbot-src`；`.env` 和 `config/accounts.json` 使用现有 `/opt/douyin-chatbot` 中的运行配置，Compose 项目名保持 `douyin-chatbot` 以沿用数据卷。每次本地提交并推送到 `main` 后，在服务器执行：
-
-```bash
-cd /opt/douyin-chatbot-src
-git pull --ff-only origin main
-docker compose -f compose.server.yaml config --quiet
-docker compose -f compose.server.yaml build business-service
-docker compose -f compose.server.yaml up -d --no-deps --wait business-service
-docker compose -f compose.server.yaml ps business-service
-```
-
-FastGPT 当前继续使用固定镜像；只有其源码需要更新时才单独初始化子模块并安排构建。构建后确认服务健康，再按镜像 ID 清理无引用的 `<none>` 镜像，不清理数据卷。
+在本地构建 `douyin-chatbot/business-service:0.1.0`，用 `docker save` 导出镜像并传到服务器。服务器执行 `docker load` 后，在现有 `/opt/douyin-chatbot` 目录用 `compose.server.yaml` 仅重建 `business-service` 容器并确认健康状态；保留原有 `.env`、`config/accounts.json` 和全部数据卷。FastGPT 工作流提示词变更需单独发布到已有工作流，不能只更新业务镜像。清理时只删除确认未被引用的项目旧镜像。

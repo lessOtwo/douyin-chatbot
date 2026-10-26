@@ -23,11 +23,6 @@ x-fastgpt-env: &fastgpt-env
 
 services:
   business-service:
-    build:
-      context: ./business-service
-      args:
-        CARGO_REGISTRY_MIRROR: sparse+https://rsproxy.cn/index/
-        DEBIAN_MIRROR_HOST: mirrors.aliyun.com
     image: douyin-chatbot/business-service:0.1.0
     restart: unless-stopped
     environment:

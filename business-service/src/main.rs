@@ -126,6 +126,93 @@ fn split_reply(text: &str) -> Vec<String> {
     }
 }
 
+fn safe_contact_reply(reply: &str, ask: bool, refused: bool) -> String {
+    let mut text = reply
+        .replace("微信联系，不打电话", "按您希望的方式联系")
+        .replace("不打电话，微信联系", "按您希望的方式联系")
+        .replace("电话或微信", "联系方式")
+        .replace("电话/微信", "联系方式")
+        .replace("电话／微信", "联系方式")
+        .replace("电话号码", "联系方式")
+        .replace("微信号", "联系方式")
+        .replace("手机号", "联系方式")
+        .replace("电话", "联系方式")
+        .replace("微信", "联系方式")
+        .replace("联系方式或联系方式", "联系方式")
+        .replace("联系方式/联系方式", "联系方式")
+        .replace("留下联系方式", "留个联系方式")
+        .replace("留一下联系方式", "留个联系方式");
+    if refused && text.contains("留个联系方式") {
+        let before = text.find("留个联系方式").unwrap_or(text.len());
+        let boundary = text[..before].rfind(['。', '！', '？', '!', '?', '；', ';', '，', ',']);
+        text.truncate(boundary.map_or(0, |index| index + text[index..].chars().next().unwrap().len_utf8()));
+        if text.trim().is_empty() {
+            text = "好的，您可以继续在这里咨询。".to_string();
+        }
+    }
+    if ask {
+        if let Some(position) = text.find("留个联系方式") {
+            let start = text[..position].rfind(['。', '！', '？', '!', '?', '；', ';', '，', ','])
+                .map_or(0, |index| index + text[index..].chars().next().unwrap().len_utf8());
+            let end = text[position..].find(['。', '！', '？', '!', '?'])
+                .map_or(text.len(), |offset| position + offset + text[position + offset..].chars().next().unwrap().len_utf8());
+            let before = text[..start].trim_end_matches(['，', ',', '。', '；', ';']).trim();
+            let after = text[end..].trim();
+            text = [before, after].into_iter().filter(|part| !part.is_empty())
+                .collect::<Vec<_>>().join("。");
+        }
+        if !text.ends_with(['。', '！', '？', '!', '?']) {
+            if !text.is_empty() { text.push('。'); }
+        }
+        text.push_str("方便留个联系方式吗？");
+    }
+    text
+}
+
+fn configured_project_match(profile: &Value, text: &str, need_type: &str) -> bool {
+    ["main", "available"].into_iter()
+        .flat_map(|group| profile["projects"][group].as_array().into_iter().flatten())
+        .filter_map(|item| item["name"].as_str())
+        .any(|name| !name.is_empty() && (text.contains(name) || need_type == name))
+}
+
+#[cfg(test)]
+mod contact_policy_tests {
+    use super::{configured_project_match, safe_contact_reply, split_reply};
+    use serde_json::json;
+
+    #[test]
+    fn only_configured_project_starts_contact_request() {
+        let profile = json!({"projects": {"main": [{"name": "专升本"}],
+            "available": [{"name": "语言培训"}], "excluded": [{"name": "事业编"}]}});
+        assert!(configured_project_match(&profile, "我想了解专升本", ""));
+        assert!(configured_project_match(&profile, "这个怎么安排", "语言培训"));
+        assert!(!configured_project_match(&profile, "事业编怎么安排", ""));
+        assert!(!configured_project_match(&profile, "你好", ""));
+    }
+
+    #[test]
+    fn final_split_part_asks_once_without_sensitive_terms() {
+        let reply = safe_contact_reply("好的，这里可以先了解基本情况。专升本属于成人学历提升咨询，能提供学习路线和时间表，具体安排需门店确认。", true, false);
+        let parts = split_reply(&reply);
+        assert_eq!(parts.len(), 2);
+        assert!(!parts[0].contains("留个联系方式"));
+        assert!(parts[1].contains("留个联系方式"));
+        assert_eq!(reply.matches("留个联系方式").count(), 1);
+        assert!(!reply.contains("电话") && !reply.contains("微信"));
+    }
+
+    #[test]
+    fn normalizes_invitation_and_respects_refusal() {
+        let invitation = safe_contact_reply("您方便留个电话或微信吗？", true, false);
+        assert_eq!(invitation, "方便留个联系方式吗？");
+        let reordered = safe_contact_reply("方便留个电话或微信吗？专升本可先了解学习路线。", true, false);
+        assert_eq!(reordered, "专升本可先了解学习路线。方便留个联系方式吗？");
+        let refused = safe_contact_reply("可以继续咨询。方便留个电话或微信吗？", false, true);
+        assert_eq!(refused, "可以继续咨询。");
+    }
+}
+
 fn migrate_outbox_parts(db: &mut Connection) -> Result<()> {
     let has_part_index = db.prepare("PRAGMA table_info(outbox)")?
         .query_map([], |row| row.get::<_, String>(1))?
@@ -192,7 +279,6 @@ struct Job {
     image_data: Option<Vec<u8>>,
     revision: i64,
     epoch: i64,
-    customer_nickname: String,
     is_peer: bool,
 }
 type ApiResult = std::result::Result<Json<Value>, ApiError>;
@@ -368,6 +454,8 @@ async fn main() -> Result<()> {
     for (table, column, definition) in [
         ("conversations", "customer_nickname", "TEXT NOT NULL DEFAULT ''"),
         ("conversations", "is_peer", "INTEGER NOT NULL DEFAULT 0"),
+        ("conversations", "project_engaged", "INTEGER NOT NULL DEFAULT 0"),
+        ("conversations", "contact_refused", "INTEGER NOT NULL DEFAULT 0"),
         ("events", "direction", "TEXT NOT NULL DEFAULT 'customer'"),
         ("events", "image_mime", "TEXT"),
         ("events", "image_data", "BLOB"),
@@ -1065,7 +1153,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         .bearer_auth(key)
         .json(
             &json!({"appId":account.fastgpt_app_id,"chatId":format!("{}-{}",job.conversation,job.epoch),"stream":false,"messages":[{"role":"user","content":content}],
-            "variables":{"merchant_id":account.merchant_id,"industry":industry,"project_selection_question":project_selection_question,"merchant_profile":merchant_profile.to_string(),"customer_nickname":job.customer_nickname}}),
+            "variables":{"merchant_id":account.merchant_id,"industry":industry,"project_selection_question":project_selection_question,"merchant_profile":merchant_profile.to_string()}}),
         )
         .send()
         .await
@@ -1134,7 +1222,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
 async fn tick(app: &App) -> Result<()> {
     let job = {
         let db = app.db.lock().unwrap();
-        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.customer_nickname,c.is_peer,e.image_mime,e.image_data FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND c.reply_rounds<?1 AND NOT EXISTS (SELECT 1 FROM merchant_accounts a JOIN merchants m ON m.id=a.merchant_id WHERE a.id=e.account_id AND m.bot_paused=1) AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('queued','sending','uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [MAX_REPLY_ROUNDS], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,customer_nickname:r.get(6)?,is_peer:r.get::<_,i64>(7)?!=0,image_mime:r.get(8)?,image_data:r.get(9)?})).optional()?;
+        let job = db.query_row("SELECT e.id,e.account_id,e.conversation_id,e.text,e.revision,c.epoch,c.is_peer,e.image_mime,e.image_data FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.status='pending' AND c.mode='bot' AND c.reply_rounds<?1 AND NOT EXISTS (SELECT 1 FROM merchant_accounts a JOIN merchants m ON m.id=a.merchant_id WHERE a.id=e.account_id AND m.bot_paused=1) AND NOT EXISTS (SELECT 1 FROM events prior WHERE prior.conversation_id=e.conversation_id AND prior.status IN ('uncertain','blocked')) AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id=e.conversation_id AND o.status IN ('queued','sending','uncertain','blocked')) ORDER BY e.rowid LIMIT 1", [MAX_REPLY_ROUNDS], |r| Ok(Job{id:r.get(0)?,account:r.get(1)?,conversation:r.get(2)?,text:r.get(3)?,revision:r.get(4)?,epoch:r.get(5)?,is_peer:r.get::<_,i64>(6)?!=0,image_mime:r.get(7)?,image_data:r.get(8)?})).optional()?;
         if let Some(job) = &job {
             db.execute(
                 "UPDATE events SET status='processing' WHERE id=?1",
@@ -1159,10 +1247,11 @@ async fn tick(app: &App) -> Result<()> {
 }
 
 async fn run_flow(app: &App, job: &Job) -> Result<()> {
+    let account = active_account(app, &job.account)?.context("unknown account")?;
     let decision = understand(app, job)
         .await
         .map_err(|error| anyhow::anyhow!("{}", error.1))?;
-    let text = decision["reply"]
+    let model_reply = decision["reply"]
         .as_str()
         .context("missing FastGPT reply")?
         .to_owned();
@@ -1171,10 +1260,10 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
     {
         let mut db = app.db.lock().unwrap();
         let tx = db.transaction()?;
-        let (revision, mode, reply_rounds): (i64, String, i64) = tx.query_row(
-            "SELECT revision,mode,reply_rounds FROM conversations WHERE id=?1",
+        let (revision, mode, reply_rounds, project_engaged, contact_refused): (i64, String, i64, bool, bool) = tx.query_row(
+            "SELECT revision,mode,reply_rounds,project_engaged,contact_refused FROM conversations WHERE id=?1",
             [&job.conversation],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
         let merchant_paused = merchant_paused_for_account(&tx, &job.account)?;
         let applied = mode == "bot" && !merchant_paused && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
@@ -1186,6 +1275,31 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             )?;
         }
         if applied {
+            let profile: Option<String> = tx.query_row(
+                "SELECT v.profile_json FROM merchants m JOIN merchant_versions v ON v.id=m.current_version_id WHERE m.id=?1 AND v.status='approved'",
+                [&account.merchant_id], |row| row.get(0)).optional()?;
+            let profile: Value = profile.as_deref().and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_else(|| json!({}));
+            let need_type = decision["fields"]["need_type"].as_str().unwrap_or("");
+            let mut engaged = project_engaged || configured_project_match(&profile, &job.text, need_type);
+            if !engaged {
+                let previous = tx.prepare("SELECT text FROM events WHERE conversation_id=?1 AND direction='customer'")?
+                    .query_map([&job.conversation], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                engaged = previous.iter().any(|text| configured_project_match(&profile, text, ""));
+            }
+            let refused = contact_refused || decision["fields"]["contact_refused"].as_bool() == Some(true);
+            let has_contact: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM leads WHERE conversation_id=?1 AND status='candidate')",
+                [&job.conversation], |row| row.get(0))?;
+            let new_contact = ["phone", "wechat"].iter().any(|key| {
+                decision["fields"][key].as_str().is_some_and(|value|
+                    value.len() >= 5 && job.text.contains(value))
+            });
+            let ask = engaged && !refused && !has_contact && !new_contact
+                && model_reply != "收到，稍后店长联系您详聊。"
+                && matches!(decision["action"].as_str(), Some("reply" | "unanswered"));
+            let text = safe_contact_reply(&model_reply, ask, refused);
             let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
             let source = if at_limit || decision["action"] == "stop" { "bot_handoff" } else { "bot" };
             for (part_index, part) in split_reply(&text).iter().enumerate() {
@@ -1193,6 +1307,10 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                     params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
             }
             tx.execute("UPDATE conversations SET reply_rounds=reply_rounds+1 WHERE id=?1", [&job.conversation])?;
+            if engaged || refused {
+                tx.execute("UPDATE conversations SET project_engaged=?1,contact_refused=?2 WHERE id=?3",
+                    params![engaged, refused, job.conversation])?;
+            }
             if decision["action"] == "unanswered" {
                 tx.execute("INSERT OR IGNORE INTO unanswered_questions(id,event_id,conversation_id,reason) VALUES(?1,?2,?3,?4)",params![id(),job.id,job.conversation,decision["reason"].as_str().context("missing review reason")?])?;
             }
