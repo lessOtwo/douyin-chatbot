@@ -16,7 +16,7 @@
 
 {"reply":"本店可咨询语言培训，具体学习安排需由门店确认。","action":"reply","fields":{"need_type":"语言培训"}}
 
-fields 为对象，可包含 need_type、phone、wechat、contact_method、contact_value、contact_promised、project_selection_only。识别到 main 或 available 中的项目时，need_type 使用该项目准确名称。客户本轮明确答应稍后提供本人联系方式时，contact_promised=true；如果上一轮刚索要联系方式，客户说“行，你等我把信息整理整理发给你”也算明确答应。只有犹豫、考虑或答应提供其他资料时不设置。客户仅打招呼或需求不明，reply 仅用已配置的 main 和 available 项目拼接提问客户想了解什么时，project_selection_only=true；回答具体问题、说明服务、澄清某一项目时不设置。未知字段就不返回。reply 必须非空；action 仅能是 reply 或 peer。peer 只能回复“不用呢 谢谢”且 fields 为空。
+fields 为对象，可包含 need_type、phone、wechat、contact_method、contact_value、contact_promised、project_selection_only。识别到 main 或 available 中的项目时，need_type 使用该项目准确名称。客户本轮明确答应稍后提供本人联系方式时，contact_promised=true；当 last_contact_request=true，表示上一轮业务服务确实索要过联系方式，此时客户说“行，你等我把信息整理整理发给你”也算明确答应。last_contact_request=false 时不要将这句对其他资料的回应误判为留资承诺。只有犹豫、考虑或答应提供其他资料时不设置。客户仅打招呼或需求不明，reply 仅用已配置的 main 和 available 项目拼接提问客户想了解什么时，project_selection_only=true；回答具体问题、说明服务、澄清某一项目时不设置。未知字段就不返回。reply 必须非空；action 仅能是 reply 或 peer。peer 只能回复“不用呢 谢谢”且 fields 为空。
 
 例如当前商家只提供语言培训和成人学历提升，客户问“事业编培训”：{"reply":"事业编培训不在本店服务范围内。这里主要提供语言培训和成人学历提升咨询。","action":"reply","fields":{}}。客户问“我大专毕业工作了，还能升本吗”：{"reply":"可以的，工作后通常仍可通过成人高考专升本等继续教育方式升本，具体需符合专科学历和当地报考要求。我们这里专升本成功率很高，也可以帮您梳理适合的升本路径。","action":"reply","fields":{"need_type":"成人学历提升"}}。不要把成人专升本说成普通全日制专升本；只有当前商家已配置成人学历提升时才能介绍本店此项服务。业务服务会在未留资时追加联系方式邀请。
 

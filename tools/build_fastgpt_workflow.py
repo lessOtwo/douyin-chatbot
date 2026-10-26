@@ -32,7 +32,7 @@ def build(model):
     start = copy.deepcopy(next(node for node in sample["nodes"] if node["flowNodeType"] == "workflowStart"))
     ai_template = next(node for node in sample["nodes"] if node["flowNodeType"] == "chatNode")
     prompt = (ROOT / "config/fastgpt-system-prompt.md").read_text(encoding="utf-8")
-    prompt += "\n当前商家：merchant_id={{merchant_id}}；行业={{industry}}；项目选择问句={{project_selection_question}}；已审核商家资料及项目配置={{merchant_profile}}。只有已审核商家资料允许作为具体经营事实。"
+    prompt += "\n当前商家：merchant_id={{merchant_id}}；行业={{industry}}；项目选择问句={{project_selection_question}}；上一轮业务服务已索要联系方式={{last_contact_request}}；已审核商家资料及项目配置={{merchant_profile}}。只有已审核商家资料允许作为具体经营事实。"
 
     classify = {
         "nodeId": "lead_intent", "name": "识别客户意图", "intro": "仅根据私信识别同行和客户本人留资",
@@ -116,6 +116,7 @@ def build(model):
         for key, label in [
             ("merchant_id", "商家编号"), ("industry", "所属行业"),
             ("project_selection_question", "项目选择问句"),
+            ("last_contact_request", "上轮是否索要联系方式"),
             ("merchant_profile", "已审核商家资料")
         ]
     ]}

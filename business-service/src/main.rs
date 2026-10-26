@@ -136,6 +136,31 @@ fn solicitation_reply(round: i64) -> &'static str {
     PHRASES[round.rem_euclid(PHRASES.len() as i64) as usize]
 }
 
+fn last_contact_request(db: &Connection, conversation: &str) -> Result<bool> {
+    let last: Option<String> = db.query_row(
+        "SELECT text FROM outbox WHERE conversation_id=?1 AND source IN ('bot','bot_handoff')
+         AND status IN ('accepted','mock_sent') ORDER BY rowid DESC LIMIT 1",
+        [conversation], |row| row.get(0),
+    ).optional()?;
+    Ok(last.is_some_and(|text| text.contains("留个联系方式")))
+}
+
+fn clear_contact_promise(text: &str, last_asked: bool) -> bool {
+    if !last_asked { return false; }
+    let text: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let sends = ["发给你", "发给您", "发你", "发您", "发过来", "给你", "给您", "留给你", "留给您"]
+        .iter().any(|word| text.contains(word));
+    let agrees = ["行", "好", "可以", "没问题", "嗯", "恩", "会的", "等我", "稍后", "待会", "等下", "一会", "回头"]
+        .iter().any(|word| text.starts_with(word));
+    let uncertain = ["不发", "不给", "不留", "不能给", "不方便给", "可能", "也许", "看情况", "考虑"]
+        .iter().any(|word| text.contains(word));
+    let other_material = ["地址", "位置", "照片", "图片", "资料", "报价", "需求"]
+        .iter().any(|word| text.contains(word));
+    let contact = ["联系方式", "联系信息", "号码", "手机号", "微信号", "电话"]
+        .iter().any(|word| text.contains(word));
+    sends && agrees && !uncertain && (!other_material || contact)
+}
+
 fn answer_with_contact_request(reply: &str, ask: bool, round: i64) -> String {
     let mut text = reply.trim()
         .replace("电话或微信", "联系方式")
@@ -170,7 +195,17 @@ fn answer_with_contact_request(reply: &str, ask: bool, round: i64) -> String {
 
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{answer_with_contact_request, solicitation_reply, split_reply};
+    use super::{answer_with_contact_request, clear_contact_promise, solicitation_reply, split_reply};
+
+    #[test]
+    fn clear_promise_requires_previous_request_and_excludes_other_material() {
+        assert!(clear_contact_promise("行，你等我把信息整理整理发给你", true));
+        assert!(clear_contact_promise("好的，稍后把联系方式发你", true));
+        for text in ["我考虑下", "好，我把地址发给你", "行，我不发给你", "可能等我发给你"] {
+            assert!(!clear_contact_promise(text, true), "{text}");
+        }
+        assert!(!clear_contact_promise("行，你等我把信息整理整理发给你", false));
+    }
 
     #[test]
     fn each_unqualified_round_asks_for_contact_with_varied_wording() {
@@ -1127,6 +1162,10 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
     } else {
         format!("你好呀～想咨询{}，还是其他相关需求呢？", projects.join("、"))
     };
+    let last_contact_request = {
+        let db = app.db.lock().unwrap();
+        last_contact_request(&db, &job.conversation)?
+    };
     let content = match (&job.image_mime, &job.image_data) {
         (Some(mime), Some(bytes)) => json!([
             {"type":"text","text":input.text},
@@ -1143,7 +1182,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         .bearer_auth(key)
         .json(
             &json!({"appId":account.fastgpt_app_id,"chatId":format!("{}-{}",job.conversation,job.epoch),"stream":false,"messages":[{"role":"user","content":content}],
-            "variables":{"merchant_id":account.merchant_id,"industry":industry,"project_selection_question":project_selection_question,"merchant_profile":merchant_profile.to_string()}}),
+            "variables":{"merchant_id":account.merchant_id,"industry":industry,"project_selection_question":project_selection_question,"last_contact_request":last_contact_request.to_string(),"merchant_profile":merchant_profile.to_string()}}),
         )
         .send()
         .await
@@ -1283,7 +1322,9 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                     decision["fields"][key].as_str().is_some_and(|value|
                         value.len() >= 5 && job.text.contains(value))
                 });
-            let promised_now = decision["fields"]["contact_promised"] == true;
+            let promised_now = decision["fields"]["contact_promised"] == true
+                || clear_contact_promise(&job.text,
+                    last_contact_request(&tx, &job.conversation)?);
             let project_selection_only = decision["fields"]["project_selection_only"] == true;
             let text = if decision["action"] == "peer" {
                 model_reply

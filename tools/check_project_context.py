@@ -46,7 +46,7 @@ class Model(BaseHTTPRequestHandler):
             {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else answer,
              "action":"peer" if peer else "stop" if stopped else "reply",
              "fields":{"phone":"13545678901","contact_method":"phone"} if provided
-                      else {"contact_promised":True} if promised
+                      else {} if promised
                       else {"project_selection_only":True} if selection
                       else {"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
             ensure_ascii=False).encode("utf-8")
@@ -84,7 +84,10 @@ def main():
                     "excluded":[{"id":"excluded","name":"职业资格考证","question":"职业资格考证问句"}]}}
             with closing(sqlite3.connect(db_path)) as db:
                 db.create_function("unixepoch",0,lambda:int(time.time()))
-                db.executescript((ROOT/"business-service/src/schema.sql").read_text(encoding="utf-8"))
+                schema=(ROOT/"business-service/src/schema.sql").read_text(encoding="utf-8")
+                old_schema=schema.replace(" contact_promised INTEGER NOT NULL DEFAULT 0,\n","")
+                assert old_schema!=schema
+                db.executescript(old_schema)
                 db.execute("INSERT INTO merchants(id,current_version_id) VALUES('merchant-demo','version-demo')")
                 db.execute("INSERT INTO merchant_versions(id,merchant_id,version,status,profile_json,contact_name,contact_phone) VALUES('version-demo','merchant-demo',1,'approved',?,'张先生','13800000000')",(json.dumps(profile,ensure_ascii=False),))
                 db.commit()
@@ -113,6 +116,7 @@ def main():
                     assert len(sent_profile["projects"]["main"])==1
                     assert "门店联系电话" not in sent_profile["fields"]
                     assert variables["industry"]=="教育教培"
+                    assert variables["last_contact_request"]=="false"
                     assert "customer_nickname" not in variables
                     def reply(event_id):
                         for _ in range(100):
@@ -128,7 +132,9 @@ def main():
                                         (8,"现在价格多少")]:
                         call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
                             "conversation_id":"c1","customer_id":"u1","text":text})
-                        CAPTURE.get(timeout=10)
+                        request=CAPTURE.get(timeout=10)
+                        assert ((request["variables"]["last_contact_request"]=="true")
+                                ==(number in (3,4,5,6,7))),request["variables"]
                         parts=reply(f"e{number}")
                         joined="".join(parts)
                         if number < 7:
@@ -145,7 +151,9 @@ def main():
                                         (15,"行，你等我把信息整理整理发给你"),(16,"价格多少")]:
                         call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
                             "conversation_id":"c4","customer_id":"u4","text":text})
-                        CAPTURE.get(timeout=10)
+                        request=CAPTURE.get(timeout=10)
+                        assert ((request["variables"]["last_contact_request"]=="true")
+                                ==(number in (14,15))),request["variables"]
                         joined="".join(reply(f"e{number}"))
                         assert ("留个联系方式" in joined)==(number in (13,14)),joined
                     with closing(sqlite3.connect(db_path)) as check:

@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "6ad7276957c1257e1bb5ed75"
-BASELINE = "32dfa4a"
+BASELINE = "f6c5782"
 OLD = json.loads(subprocess.check_output(
     ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 PREVIOUS = json.loads(subprocess.check_output(
@@ -155,10 +155,15 @@ def main():
                 live["value"] = new_inputs[key]
             changed.append(f"{node_id}.{key}")
     variables = target["chatConfig"]["variables"]
-    if any(item["key"] == "customer_nickname" for item in variables):
-        target["chatConfig"]["variables"] = [item for item in variables
-                                              if item["key"] != "customer_nickname"]
-        changed.append("chatConfig.customer_nickname")
+    baseline_variables = [item for item in OLD["chatConfig"]["variables"]
+                          if item["key"] != "customer_nickname"]
+    expected_variables = NEW["chatConfig"]["variables"]
+    current_variables = [item for item in variables if item["key"] != "customer_nickname"]
+    if current_variables not in (baseline_variables, expected_variables):
+        raise RuntimeError("Published workflow variables differ from baseline")
+    if variables != expected_variables:
+        target["chatConfig"]["variables"] = expected_variables
+        changed.append("chatConfig.variables")
     if target["nodes"] == published["nodes"] and target["chatConfig"] == published["chatConfig"]:
         print("Contact policy already published")
         return
