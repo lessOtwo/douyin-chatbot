@@ -4,12 +4,18 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY web ./web
 ARG CARGO_BUILD_JOBS=1
+ARG CARGO_REGISTRY_MIRROR=
 RUN --mount=type=cache,id=douyin-chatbot-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=douyin-chatbot-target,target=/build/target,sharing=locked \
-    cargo build --release --locked && cp target/release/douyin-chatbot-service /build/business-service
+    if [ -n "$CARGO_REGISTRY_MIRROR" ]; then \
+      printf '[source.crates-io]\nreplace-with = "server-mirror"\n[source.server-mirror]\nregistry = "%s"\n' "$CARGO_REGISTRY_MIRROR" > /usr/local/cargo/config.toml; \
+    fi && cargo build --release --locked && cp target/release/douyin-chatbot-service /build/business-service
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+ARG DEBIAN_MIRROR_HOST=
+RUN if [ -n "$DEBIAN_MIRROR_HOST" ]; then \
+      sed -i "s|deb.debian.org|$DEBIAN_MIRROR_HOST|g" /etc/apt/sources.list.d/debian.sources; \
+    fi && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home chatbot && mkdir /data && chown chatbot:chatbot /data
 WORKDIR /app
 COPY --from=build /build/business-service /usr/local/bin/business-service
