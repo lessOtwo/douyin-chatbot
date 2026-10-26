@@ -42,8 +42,14 @@ class Model(BaseHTTPRequestHandler):
                 else "语言培训可以咨询课程安排，具体安排需门店确认。" if '语言培训' in message
                 else "具体价格需要店里确认。" if '价格' in message
                 else "这里可以咨询语言培训或成人学历提升。")
+        request=("留个联系方式，我们好介绍课程安排。" if '语言培训' in message
+                 else "方便留个联系方式，我给您介绍服务内容。" if '先介绍' in message
+                 else "留个联系方式，方便后续细聊您的需求。" if refused
+                 else "您愿意留个联系方式，让我们补充项目说明吗？" if stopped
+                 else "方便留个联系方式，便于确认具体方案吗？")
         body=json.dumps({"choices":[{"message":{"content":json.dumps(
             {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else answer,
+             "contact_request":"" if selection or provided or peer else request,
              "action":"peer" if peer else "stop" if stopped else "reply",
              "fields":{"phone":"13545678901","contact_method":"phone"} if provided
                       else {} if promised
@@ -117,6 +123,7 @@ def main():
                     assert "门店联系电话" not in sent_profile["fields"]
                     assert variables["industry"]=="教育教培"
                     assert variables["last_contact_request"]=="false"
+                    assert variables["contact_request_allowed"]=="true"
                     assert "customer_nickname" not in variables
                     def reply(event_id):
                         for _ in range(100):
@@ -135,6 +142,8 @@ def main():
                         request=CAPTURE.get(timeout=10)
                         assert ((request["variables"]["last_contact_request"]=="true")
                                 ==(number in (3,4,5,6,7))),request["variables"]
+                        assert ((request["variables"]["contact_request_allowed"]=="true")
+                                ==(number<8)),request["variables"]
                         parts=reply(f"e{number}")
                         joined="".join(parts)
                         if number < 7:
@@ -154,6 +163,8 @@ def main():
                         request=CAPTURE.get(timeout=10)
                         assert ((request["variables"]["last_contact_request"]=="true")
                                 ==(number in (14,15))),request["variables"]
+                        assert ((request["variables"]["contact_request_allowed"]=="true")
+                                ==(number in (12,13,14))),request["variables"]
                         joined="".join(reply(f"e{number}"))
                         assert ("留个联系方式" in joined)==(number in (13,14)),joined
                     with closing(sqlite3.connect(db_path)) as check:

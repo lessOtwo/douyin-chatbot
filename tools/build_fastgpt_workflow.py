@@ -32,7 +32,7 @@ def build(model):
     start = copy.deepcopy(next(node for node in sample["nodes"] if node["flowNodeType"] == "workflowStart"))
     ai_template = next(node for node in sample["nodes"] if node["flowNodeType"] == "chatNode")
     prompt = (ROOT / "config/fastgpt-system-prompt.md").read_text(encoding="utf-8")
-    prompt += "\n当前商家：merchant_id={{merchant_id}}；行业={{industry}}；项目选择问句={{project_selection_question}}；上一轮业务服务已索要联系方式={{last_contact_request}}；已审核商家资料及项目配置={{merchant_profile}}。只有已审核商家资料允许作为具体经营事实。"
+    prompt += "\n当前商家：merchant_id={{merchant_id}}；行业={{industry}}；项目选择问句={{project_selection_question}}；上一轮业务服务已索要联系方式={{last_contact_request}}；本轮允许邀请留资={{contact_request_allowed}}；已审核商家资料及项目配置={{merchant_profile}}。只有已审核商家资料允许作为具体经营事实。"
 
     classify = {
         "nodeId": "lead_intent", "name": "识别客户意图", "intro": "仅根据私信识别同行和客户本人留资",
@@ -98,11 +98,11 @@ def build(model):
         ai("lead_received_reply", "首次留资确认", 1510, 130,
            "客户本轮明确主动留下本人联系方式。只输出约定 JSON：reply 必须逐字为‘收到，稍后店长联系您详聊。’，action=reply；fields 中的 phone 和/或 wechat 只取本轮本人主动留下的原文，并给出 contact_method。客户说‘不要打电话’或‘加我微信’且只留下手机号时，phone 保留手机号、contact_method=wechat，不要伪造独立微信号。不得提取引用、否定或第三方联系方式。不要追加问题或解释。"),
         ai("contact_reply", "商家联系方式答疑", 1510, 390,
-           "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。不自行索要客户联系方式，业务服务会在未留资时统一追加。回复不出现电话、微信二词。只输出约定 JSON。"),
+           "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。reply 不出现电话、微信二词；如 contact_request_allowed=true，另写结合当前问题的 contact_request，不把它写入 reply。只输出约定 JSON。"),
         ai("retry_reply", "拒绝后继续答疑", 1510, 650,
-           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；如问能否做某事，先给明确结论和必要条件。不设置 contact_refused，不返回 stop，也不自行索要；未留资时业务服务会在末尾统一追加邀请。只输出约定 JSON。"),
+           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；如问能否做某事，先给明确结论和必要条件。不设置 contact_refused，不返回 stop。若 contact_request_allowed=true，另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
         ai("normal_reply", "商家项目答疑", 1510, 910,
-           "先根据已审核商家资料和项目分组回答当前问题；能不能、可不可以等问题先给结论，再说必要条件和本店能提供的帮助，不要只介绍服务而漏答客户的问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。客户仅打招呼或需求不明时，可只用已配置的 main、available 项目拼接选择问句，并设置 fields.project_selection_only=true，此问句不附带联系方式邀请；回答或澄清具体项目时不设置。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。不自行索要联系方式，业务服务会在未留资且未承诺稍后提供时对答疑末尾统一追加；不返回 stop。只输出约定 JSON。"),
+           "先根据已审核商家资料和项目分组回答当前问题；能不能、可不可以等问题先给结论，再说必要条件和本店能提供的帮助，不要只介绍服务而漏答客户的问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。客户仅打招呼或需求不明时，可只用已配置的 main、available 项目拼接选择问句，并设置 fields.project_selection_only=true，contact_request 为空；回答或澄清具体项目时不设置。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。其他答疑在 contact_request_allowed=true 时另写结合项目的 contact_request，变化表达和索要理由；不返回 stop。只输出约定 JSON。"),
     ]
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
@@ -117,6 +117,7 @@ def build(model):
             ("merchant_id", "商家编号"), ("industry", "所属行业"),
             ("project_selection_question", "项目选择问句"),
             ("last_contact_request", "上轮是否索要联系方式"),
+            ("contact_request_allowed", "本轮是否允许邀请留资"),
             ("merchant_profile", "已审核商家资料")
         ]
     ]}
