@@ -94,9 +94,10 @@ mod staff_title_tests {
 }
 
 fn split_reply(text: &str) -> Vec<String> {
+    const SPLIT_LIMIT: usize = 60;
     let text = text.trim();
     let length = text.chars().count();
-    if length <= 40 {
+    if length <= SPLIT_LIMIT {
         return vec![text.to_owned()];
     }
     if let Some(contact_at) = text.find("留个联系方式") {
@@ -113,12 +114,12 @@ fn split_reply(text: &str) -> Vec<String> {
     }
     let mut remaining = text;
     let mut parts = Vec::new();
-    while remaining.chars().count() > 40 {
+    while remaining.chars().count() > SPLIT_LIMIT {
         let remaining_length = remaining.chars().count();
-        let part_count = remaining_length.div_ceil(40);
+        let part_count = remaining_length.div_ceil(SPLIT_LIMIT);
         let target = remaining_length.div_ceil(part_count);
-        let minimum = remaining_length - 40 * (part_count - 1);
-        let limit = remaining.char_indices().nth(40).map_or(remaining.len(), |(byte, _)| byte);
+        let minimum = remaining_length - SPLIT_LIMIT * (part_count - 1);
+        let limit = remaining.char_indices().nth(SPLIT_LIMIT).map_or(remaining.len(), |(byte, _)| byte);
         let boundary = remaining[..limit].char_indices()
             .filter(|(_, ch)| "。！？!?；;，,".contains(*ch))
             .map(|(byte, ch)| byte + ch.len_utf8())
@@ -217,14 +218,14 @@ mod contact_policy_tests {
     fn short_model_reply_stays_in_one_part() {
         let text = compose_model_reply("可以维修窗户。", "留个联系方式，方便安排师傅上门。", true);
         assert_eq!(split_reply(&text), vec![text]);
-        assert_eq!(split_reply(&"好".repeat(40)).len(), 1);
-        assert_eq!(split_reply(&"好".repeat(41)).len(), 2);
+        assert_eq!(split_reply(&"好".repeat(60)).len(), 1);
+        assert_eq!(split_reply(&"好".repeat(61)).len(), 2);
     }
 
     #[test]
     fn answer_then_ask_once_in_final_split_part() {
         let reply = compose_model_reply(
-            "事业编培训暂不在本店服务范围内，主要提供语言培训和成人学历提升。",
+            "事业编培训暂不在本店服务范围内，主要提供语言培训和成人学历提升。您可以说说目前的学历和学习目标，我们再帮您看看适合的课程。",
             "留个联系方式，方便为您介绍合适的课程。", true);
         let parts = split_reply(&reply);
         assert!(parts.len() >= 2);
@@ -241,17 +242,17 @@ mod contact_policy_tests {
     }
 
     #[test]
-    fn long_model_reply_splits_only_after_forty_characters() {
-        let long = "这项服务可以做，具体要看现场情况。我们可以先了解门窗的尺寸和使用问题，再安排工作人员确认维修方案。";
+    fn long_model_reply_splits_only_after_sixty_characters() {
+        let long = "这项服务可以做，具体要看现场情况。我们可以先了解门窗的尺寸和使用问题，再安排工作人员确认维修方案。您也可以告诉我们房屋目前的使用情况，便于进一步沟通。";
         let parts = split_reply(long);
         assert!(parts.len() >= 2);
-        assert!(parts.iter().all(|part| part.chars().count() <= 40));
+        assert!(parts.iter().all(|part| part.chars().count() <= 60));
         assert_eq!(parts.join(""), long);
     }
 
     #[test]
     fn long_model_contact_reason_stays_in_final_part() {
-        let answer = "可以维修，具体情况需要到现场确认。";
+        let answer = "可以维修，具体情况需要到现场确认。您先说说窗户哪里出现了问题，我们会结合现场状况给您建议。";
         let request = "方便留个联系方式吗？我们可以根据您说的窗户问题安排师傅查看，再和您确认合适的维修方案。";
         let text = compose_model_reply(answer, request, true);
         let parts = split_reply(&text);
