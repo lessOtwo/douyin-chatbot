@@ -29,10 +29,16 @@ class Model(BaseHTTPRequestHandler):
     def do_POST(self):
         data=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         CAPTURE.put(data)
-        refused='明确拒绝留联系方式' in data['messages'][0]['content']
+        message=data['messages'][0]['content']
+        refused='明确拒绝留联系方式' in message
+        stopped='别再联系我' in message
+        provided='13545678901' in message
+        peer='你有全屋定制的装修需求吗' in message
         body=json.dumps({"choices":[{"message":{"content":json.dumps(
-            {"reply":"好的，可以继续咨询。" if refused else "您好，请说说需求。",
-             "action":"reply","fields":{"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
+            {"reply":"不用呢 谢谢" if peer else "好的，之后不再联系您。" if stopped else "好的，可以继续咨询。",
+             "action":"peer" if peer else "stop" if stopped else "reply",
+             "fields":{"phone":"13545678901","contact_method":"phone"} if provided
+                      else {"contact_refused":True} if refused else {}},ensure_ascii=False)}}]},
             ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type","application/json")
@@ -105,21 +111,44 @@ def main():
                             if rows and all(row[1]=='mock_sent' for row in rows):return [row[0] for row in rows]
                             time.sleep(.1)
                         raise AssertionError(f"missing outbox for {event_id}")
-                    for number,text in [(2,"语言培训"),(3,"先介绍一下"),(4,"我明确拒绝留联系方式"),(5,"还能介绍吗")]:
+                    replies=[]
+                    for number,text in [(2,"语言培训"),(3,"先介绍一下"),(4,"我明确拒绝留联系方式"),
+                                        (5,"别再联系我"),(6,"还能介绍吗"),(7,"我的号码是13545678901"),
+                                        (8,"现在价格多少")]:
                         call(base,"/api/simulate/demo",{"event_id":f"e{number}","message_id":f"m{number}",
                             "conversation_id":"c1","customer_id":"u1","text":text})
                         CAPTURE.get(timeout=10)
+                        if number == 8:
+                            for _ in range(100):
+                                with closing(sqlite3.connect(db_path)) as check:
+                                    status=check.execute("SELECT status FROM events WHERE event_id='e8'").fetchone()
+                                    count=check.execute("SELECT COUNT(*) FROM outbox o JOIN events e ON e.id=o.event_id WHERE e.event_id='e8'").fetchone()[0]
+                                if status and status[0]=='processed': break
+                                time.sleep(.1)
+                            assert status and status[0]=='processed' and count==0,(status,count)
+                            break
                         parts=reply(f"e{number}")
                         joined="".join(parts)
-                        if number in (2,3):
-                            assert joined.count("留个联系方式")==1 and "留个联系方式" in parts[-1],parts
+                        if number < 7:
+                            assert len(parts)==1 and joined.count("留个联系方式")==1,parts
+                            replies.append(joined)
                         else:
-                            assert "留个联系方式" not in joined,parts
+                            assert joined=="收到，稍后店长联系您详聊。",parts
                         assert "电话" not in joined and "微信" not in joined,parts
+                    assert len(set(replies))==4,replies
+                    call(base,"/api/simulate/demo",{"event_id":"e9","message_id":"m9",
+                        "conversation_id":"c2","customer_id":"u2","customer_nickname":"全屋定制联系我",
+                        "text":"你有全屋定制的装修需求吗？有的话联系我"})
+                    CAPTURE.get(timeout=10)
+                    assert reply("e9")==["不用呢 谢谢"]
+                    call(base,"/api/simulate/demo",{"event_id":"e10","message_id":"m10",
+                        "conversation_id":"c2","customer_id":"u2","text":"我想咨询语言培训"})
+                    assert reply("e10")==["不用呢 谢谢"]
                     print(json.dumps({"result":"passed","checks":["one-turn message",
                         "approved project snapshot injected","non-public phone excluded",
-                        "nickname omitted from model request", "configured project and later turns ask once",
-                        "explicit refusal persists", "generic question lists main then available projects and excludes unavailable ones"]},
+                        "nickname omitted from model request", "all non-peer turns ask with varied wording",
+                        "refusal and stop model output ignored", "provided contact acknowledged once then no outbound reply",
+                        "nickname alone is not peer but message promotion is persistent peer"]},
                         ensure_ascii=False))
                 finally:
                     service.terminate();service.wait(timeout=10)

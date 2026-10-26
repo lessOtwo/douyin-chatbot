@@ -14,11 +14,11 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "6ad7276957c1257e1bb5ed75"
-BASELINE = "4d921f4"
+BASELINE = "a7f024b"
 OLD = json.loads(subprocess.check_output(
     ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 PREVIOUS = json.loads(subprocess.check_output(
-    ["git", "show", "24aa075:config/fastgpt-lead-workflow.json"], cwd=ROOT))
+    ["git", "show", f"{BASELINE}:config/fastgpt-lead-workflow.json"], cwd=ROOT))
 NEW = json.loads((ROOT / "config/fastgpt-lead-workflow.json").read_text(encoding="utf-8"))
 BACKUP = ROOT / "artifacts/fastgpt-contact-policy-backup.json"
 
@@ -77,6 +77,18 @@ def main():
         raise RuntimeError(f"Published workflow topology differs: live nodes={sorted(live_nodes)}, baseline nodes={sorted(old_nodes)}, live edges={edge_signature(target['edges'])}, baseline edges={edge_signature(OLD['edges'])}")
     changed = []
     for node_id in old_nodes:
+        for attribute in ("name", "intro"):
+            before = old_nodes[node_id].get(attribute)
+            after = new_nodes[node_id].get(attribute)
+            if before != after:
+                current = live_nodes[node_id].get(attribute)
+                allowed = (before, after)
+                if node_id == "lead_intent" and attribute == "intro":
+                    allowed += (before.replace("同行、", ""),)
+                if current not in allowed:
+                    raise RuntimeError(f"Published {node_id}.{attribute} differs from baseline: {current!r} != {before!r}")
+                live_nodes[node_id][attribute] = after
+                changed.append(f"{node_id}.{attribute}")
         old_inputs = {item["key"]: item["value"] for item in old_nodes[node_id]["inputs"] if "value" in item}
         previous_inputs = {item["key"]: item["value"] for item in previous_nodes[node_id]["inputs"] if "value" in item}
         new_inputs = {item["key"]: item["value"] for item in new_nodes[node_id]["inputs"] if "value" in item}
@@ -150,7 +162,7 @@ def main():
     if any(draft[key] != payload[key] for key in payload):
         raise RuntimeError("FastGPT draft did not retain policy changes")
     request("/api/core/app/version/publish?" + query, {
-        **payload, "isPublish": True, "versionName": "私信内容同行识别与留资回复"})
+        **payload, "isPublish": True, "versionName": "非同行持续留资邀请"})
     new_app = request("/api/core/app/detail?" + query)
     new_version = new_app.get("publishedVersionId")
     if not new_version or new_version == version:

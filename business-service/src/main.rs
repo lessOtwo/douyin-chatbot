@@ -126,90 +126,35 @@ fn split_reply(text: &str) -> Vec<String> {
     }
 }
 
-fn safe_contact_reply(reply: &str, ask: bool, refused: bool) -> String {
-    let mut text = reply
-        .replace("微信联系，不打电话", "按您希望的方式联系")
-        .replace("不打电话，微信联系", "按您希望的方式联系")
-        .replace("电话或微信", "联系方式")
-        .replace("电话/微信", "联系方式")
-        .replace("电话／微信", "联系方式")
-        .replace("电话号码", "联系方式")
-        .replace("微信号", "联系方式")
-        .replace("手机号", "联系方式")
-        .replace("电话", "联系方式")
-        .replace("微信", "联系方式")
-        .replace("联系方式或联系方式", "联系方式")
-        .replace("联系方式/联系方式", "联系方式")
-        .replace("留下联系方式", "留个联系方式")
-        .replace("留一下联系方式", "留个联系方式");
-    if refused && text.contains("留个联系方式") {
-        let before = text.find("留个联系方式").unwrap_or(text.len());
-        let boundary = text[..before].rfind(['。', '！', '？', '!', '?', '；', ';', '，', ',']);
-        text.truncate(boundary.map_or(0, |index| index + text[index..].chars().next().unwrap().len_utf8()));
-        if text.trim().is_empty() {
-            text = "好的，您可以继续在这里咨询。".to_string();
-        }
-    }
-    if ask {
-        if let Some(position) = text.find("留个联系方式") {
-            let start = text[..position].rfind(['。', '！', '？', '!', '?', '；', ';', '，', ','])
-                .map_or(0, |index| index + text[index..].chars().next().unwrap().len_utf8());
-            let end = text[position..].find(['。', '！', '？', '!', '?'])
-                .map_or(text.len(), |offset| position + offset + text[position + offset..].chars().next().unwrap().len_utf8());
-            let before = text[..start].trim_end_matches(['，', ',', '。', '；', ';']).trim();
-            let after = text[end..].trim();
-            text = [before, after].into_iter().filter(|part| !part.is_empty())
-                .collect::<Vec<_>>().join("。");
-        }
-        if !text.ends_with(['。', '！', '？', '!', '?']) {
-            if !text.is_empty() { text.push('。'); }
-        }
-        text.push_str("方便留个联系方式吗？");
-    }
-    text
-}
-
-fn configured_project_match(profile: &Value, text: &str, need_type: &str) -> bool {
-    ["main", "available"].into_iter()
-        .flat_map(|group| profile["projects"][group].as_array().into_iter().flatten())
-        .filter_map(|item| item["name"].as_str())
-        .any(|name| !name.is_empty() && (text.contains(name) || need_type == name))
+fn solicitation_reply(round: i64) -> &'static str {
+    const PHRASES: [&str; 4] = [
+        "方便留个联系方式吗？",
+        "您愿意留个联系方式，方便我们和您沟通吗？",
+        "留个联系方式吧，店里工作人员好和您进一步沟通。",
+        "方便留个联系方式，让我们再和您沟通吗？",
+    ];
+    PHRASES[round.rem_euclid(PHRASES.len() as i64) as usize]
 }
 
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{configured_project_match, safe_contact_reply, split_reply};
-    use serde_json::json;
+    use super::{solicitation_reply, split_reply};
 
     #[test]
-    fn only_configured_project_starts_contact_request() {
-        let profile = json!({"projects": {"main": [{"name": "专升本"}],
-            "available": [{"name": "语言培训"}], "excluded": [{"name": "事业编"}]}});
-        assert!(configured_project_match(&profile, "我想了解专升本", ""));
-        assert!(configured_project_match(&profile, "这个怎么安排", "语言培训"));
-        assert!(!configured_project_match(&profile, "事业编怎么安排", ""));
-        assert!(!configured_project_match(&profile, "你好", ""));
+    fn each_round_only_asks_for_contact_with_varied_wording() {
+        let replies: Vec<_> = (0..4).map(solicitation_reply).collect();
+        assert_eq!(replies.iter().collect::<std::collections::HashSet<_>>().len(), 4);
+        for reply in replies {
+            assert!(reply.contains("留个联系方式"));
+            assert!(!reply.contains("电话") && !reply.contains("微信"));
+        }
     }
 
     #[test]
-    fn final_split_part_asks_once_without_sensitive_terms() {
-        let reply = safe_contact_reply("好的，这里可以先了解基本情况。专升本属于成人学历提升咨询，能提供学习路线和时间表，具体安排需门店确认。", true, false);
-        let parts = split_reply(&reply);
-        assert_eq!(parts.len(), 2);
-        assert!(!parts[0].contains("留个联系方式"));
-        assert!(parts[1].contains("留个联系方式"));
-        assert_eq!(reply.matches("留个联系方式").count(), 1);
-        assert!(!reply.contains("电话") && !reply.contains("微信"));
-    }
-
-    #[test]
-    fn normalizes_invitation_and_respects_refusal() {
-        let invitation = safe_contact_reply("您方便留个电话或微信吗？", true, false);
-        assert_eq!(invitation, "方便留个联系方式吗？");
-        let reordered = safe_contact_reply("方便留个电话或微信吗？专升本可先了解学习路线。", true, false);
-        assert_eq!(reordered, "专升本可先了解学习路线。方便留个联系方式吗？");
-        let refused = safe_contact_reply("可以继续咨询。方便留个电话或微信吗？", false, true);
-        assert_eq!(refused, "可以继续咨询。");
+    fn solicitation_does_not_split_into_extra_messages() {
+        for round in 0..4 {
+            assert_eq!(split_reply(solicitation_reply(round)).len(), 1);
+        }
     }
 }
 
@@ -1196,7 +1141,13 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
     if action == "peer" {
         decision["reply"] = json!("不用呢 谢谢");
         decision["fields"] = json!({});
-    } else if industry != "教育教培" {
+    } else {
+        // The workflow may still return an older stop or answer decision.
+        // Peer detection and lead fields are useful; every other turn solicits contact.
+        decision["action"] = json!("reply");
+        decision.as_object_mut().unwrap().remove("reason");
+    }
+    if action != "peer" && industry != "教育教培" {
         // Keep an older published prompt or a model slip from calling every shop's staff "老师".
         if let Some(reply) = decision["reply"].as_str() {
             decision["reply"] = json!(correct_staff_title(reply, industry));
@@ -1247,7 +1198,7 @@ async fn tick(app: &App) -> Result<()> {
 }
 
 async fn run_flow(app: &App, job: &Job) -> Result<()> {
-    let account = active_account(app, &job.account)?.context("unknown account")?;
+    active_account(app, &job.account)?.context("unknown account")?;
     let decision = understand(app, job)
         .await
         .map_err(|error| anyhow::anyhow!("{}", error.1))?;
@@ -1260,10 +1211,10 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
     {
         let mut db = app.db.lock().unwrap();
         let tx = db.transaction()?;
-        let (revision, mode, reply_rounds, project_engaged, contact_refused): (i64, String, i64, bool, bool) = tx.query_row(
-            "SELECT revision,mode,reply_rounds,project_engaged,contact_refused FROM conversations WHERE id=?1",
+        let (revision, mode, reply_rounds): (i64, String, i64) = tx.query_row(
+            "SELECT revision,mode,reply_rounds FROM conversations WHERE id=?1",
             [&job.conversation],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let merchant_paused = merchant_paused_for_account(&tx, &job.account)?;
         let applied = mode == "bot" && !merchant_paused && revision == job.revision && reply_rounds < MAX_REPLY_ROUNDS;
@@ -1275,45 +1226,32 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             )?;
         }
         if applied {
-            let profile: Option<String> = tx.query_row(
-                "SELECT v.profile_json FROM merchants m JOIN merchant_versions v ON v.id=m.current_version_id WHERE m.id=?1 AND v.status='approved'",
-                [&account.merchant_id], |row| row.get(0)).optional()?;
-            let profile: Value = profile.as_deref().and_then(|raw| serde_json::from_str(raw).ok())
-                .unwrap_or_else(|| json!({}));
-            let need_type = decision["fields"]["need_type"].as_str().unwrap_or("");
-            let mut engaged = project_engaged || configured_project_match(&profile, &job.text, need_type);
-            if !engaged {
-                let previous = tx.prepare("SELECT text FROM events WHERE conversation_id=?1 AND direction='customer'")?
-                    .query_map([&job.conversation], |row| row.get::<_, String>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                engaged = previous.iter().any(|text| configured_project_match(&profile, text, ""));
-            }
-            let refused = contact_refused || decision["fields"]["contact_refused"].as_bool() == Some(true);
             let has_contact: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM leads WHERE conversation_id=?1 AND status='candidate')",
+                "SELECT EXISTS(SELECT 1 FROM leads WHERE conversation_id=?1)",
                 [&job.conversation], |row| row.get(0))?;
-            let new_contact = ["phone", "wechat"].iter().any(|key| {
-                decision["fields"][key].as_str().is_some_and(|value|
-                    value.len() >= 5 && job.text.contains(value))
-            });
-            let ask = engaged && !refused && !has_contact && !new_contact
-                && model_reply != "收到，稍后店长联系您详聊。"
-                && matches!(decision["action"].as_str(), Some("reply" | "unanswered"));
-            let text = safe_contact_reply(&model_reply, ask, refused);
+            let new_contact = decision["fields"]["contact_method"] != "none"
+                && ["phone", "wechat"].iter().any(|key| {
+                    decision["fields"][key].as_str().is_some_and(|value|
+                        value.len() >= 5 && job.text.contains(value))
+                });
+            let text = if decision["action"] == "peer" {
+                Some(model_reply.as_str())
+            } else if has_contact {
+                None
+            } else if new_contact {
+                Some("收到，稍后店长联系您详聊。")
+            } else {
+                Some(solicitation_reply(reply_rounds))
+            };
             let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
-            let source = if at_limit || decision["action"] == "stop" { "bot_handoff" } else { "bot" };
-            for (part_index, part) in split_reply(&text).iter().enumerate() {
-                tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
+            let source = if at_limit { "bot_handoff" } else { "bot" };
+            if let Some(text) = text {
+                for (part_index, part) in split_reply(text).iter().enumerate() {
+                    tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                        params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
+                }
             }
             tx.execute("UPDATE conversations SET reply_rounds=reply_rounds+1 WHERE id=?1", [&job.conversation])?;
-            if engaged || refused {
-                tx.execute("UPDATE conversations SET project_engaged=?1,contact_refused=?2 WHERE id=?3",
-                    params![engaged, refused, job.conversation])?;
-            }
-            if decision["action"] == "unanswered" {
-                tx.execute("INSERT OR IGNORE INTO unanswered_questions(id,event_id,conversation_id,reason) VALUES(?1,?2,?3,?4)",params![id(),job.id,job.conversation,decision["reason"].as_str().context("missing review reason")?])?;
-            }
             // Candidate only: does not assert verification, CRM delivery or successful contact.
             if decision["action"] != "stop" && decision["action"] != "peer" {
                 let fields = &decision["fields"];
@@ -1377,7 +1315,7 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                 tx.execute("UPDATE conversations SET is_peer=1 WHERE id=?1", [&job.conversation])?;
                 tx.execute("DELETE FROM leads WHERE conversation_id=?1 AND status='candidate'", [&job.conversation])?;
             }
-            if decision["action"] == "stop" || at_limit {
+            if at_limit {
                 // The acknowledgment can be sent; later incoming messages are held for manual review.
                 tx.execute(
                     "UPDATE conversations SET mode='paused' WHERE id=?1",
