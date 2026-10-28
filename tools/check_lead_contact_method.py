@@ -33,7 +33,7 @@ class Model(BaseHTTPRequestHandler):
         if text == "我是安装木门的，电话13500000000":
             decision = {"reply": "不用呢 谢谢", "action": "peer", "fields": {"phone": "13500000000"}}
             fields = None
-        elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "详细介绍"):
+        elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "OK", "详细介绍"):
             decision = {"reply": "可以咨询成人学历提升。" + ("我们会按您的学历情况介绍可选学习路径。" * 5 if text == "详细介绍" else ""),
                         "contact_request": "留个联系方式，方便我们按您的情况介绍课程。",
                         "action": "reply", "fields": {}}
@@ -46,6 +46,10 @@ class Model(BaseHTTPRequestHandler):
             fields = {"phone": "13600000000", "contact_method": "wechat"}
         elif text == "微信号是abc12345":
             fields = {"wechat": "abc12345", "contact_method": "wechat"}
+        elif text in ("abc12", "微信号是abc12"):
+            fields = {"wechat": "abc12", "contact_method": "wechat"}
+        elif text == "微信号是abc123":
+            fields = {"wechat": "abc123", "contact_method": "wechat"}
         elif text == "手机号13700000000，给我打电话":
             fields = {"phone": "13700000000", "contact_method": "phone"}
         else:
@@ -174,6 +178,31 @@ def main():
                     wait_for(base, bare["conversation_id"], [("wechat", "ltltlt11")])
                     acknowledged = wait_for_event_reply(base, bare["id"])
                     assert len(acknowledged) == 1 and acknowledged[0]["text"] == "收到，稍后店长联系您详聊。", acknowledged
+                    six_first = send(16, "six-wechat", "专升本")
+                    wait_for_event_reply(base, six_first["id"])
+                    six = send(17, "six-wechat", "abc123")
+                    wait_for(base, six["conversation_id"], [("wechat", "abc123")])
+                    wait_for_event_reply(base, six["id"])
+                    short_first = send(18, "short-wechat", "专升本")
+                    wait_for_event_reply(base, short_first["id"])
+                    short = send(19, "short-wechat", "abc12")
+                    short_reply = wait_for_event_reply(base, short["id"])
+                    assert "留个联系方式" in short_reply[0]["text"] and "收到，稍后" not in short_reply[0]["text"], short_reply
+                    assert not [lead for lead in call(base, "/api/snapshot")["leads"]
+                                if lead["conversation_id"] == short["conversation_id"]]
+                    ordinary_short = send(22, "short-wechat", "OK")
+                    ordinary_reply = wait_for_event_reply(base, ordinary_short["id"])
+                    assert "不足 6 位" not in ordinary_reply[0]["text"], ordinary_reply
+                    assert not [lead for lead in call(base, "/api/snapshot")["leads"]
+                                if lead["conversation_id"] == short["conversation_id"]]
+                    explicit_short = send(20, "explicit-short", "微信号是abc12")
+                    explicit_reply = wait_for_event_reply(base, explicit_short["id"])
+                    assert "收到，稍后" not in explicit_reply[0]["text"], explicit_reply
+                    assert not [lead for lead in call(base, "/api/snapshot")["leads"]
+                                if lead["conversation_id"] == explicit_short["conversation_id"]]
+                    explicit_six = send(21, "explicit-six", "微信号是abc123")
+                    wait_for(base, explicit_six["conversation_id"], [("wechat", "abc123")])
+                    wait_for_event_reply(base, explicit_six["id"])
                     phone_first = send(14, "bare-phone", "专升本")
                     wait_for_event_reply(base, phone_first["id"])
                     bare_phone = send(15, "bare-phone", "13545678901")
@@ -193,6 +222,7 @@ def main():
                         "a new number does not change the previous number's channel",
                         "peer reply remains fixed and creates no leads",
                         "bare alphanumeric reply after a request becomes a WeChat lead",
+                        "WeChat ID needs at least six characters in bare and explicit messages",
                         "Chinese mobile number takes priority over WeChat ID",
                         "bare alphanumeric message without a previous request creates no lead",
                         "one reply per turn with at most 80 characters"]}))

@@ -94,6 +94,7 @@ mod staff_title_tests {
 }
 
 const MAX_REPLY_CHARS: usize = 80;
+const MIN_WECHAT_CHARS: usize = 6;
 
 fn shorten_reply(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit { return text.to_owned(); }
@@ -112,7 +113,8 @@ fn shorten_reply(text: &str, limit: usize) -> String {
 
 fn bare_contact<'a>(text: &'a str, last_asked: bool) -> Option<(&'static str, &'a str)> {
     let value = text.trim();
-    if !last_asked || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+    if !last_asked || value.chars().count() < MIN_WECHAT_CHARS
+        || !value.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return None;
     }
     let bytes = value.as_bytes();
@@ -257,9 +259,10 @@ mod contact_policy_tests {
     #[test]
     fn bare_alphanumeric_reply_after_request_prefers_mobile_number() {
         assert_eq!(bare_contact(" ltltlt11 ", true), Some(("wechat", "ltltlt11")));
+        assert_eq!(bare_contact("abc123", true), Some(("wechat", "abc123")));
         assert_eq!(bare_contact("13545678901", true), Some(("phone", "13545678901")));
         assert_eq!(bare_contact("12345678901", true), Some(("wechat", "12345678901")));
-        for text in ["", "abc_123", "微信号abc123", "abc-123", "abc 123"] {
+        for text in ["", "a", "abc12", "12345", "abc_123", "微信号abc123", "abc-123", "abc 123"] {
             assert_eq!(bare_contact(text, true), None, "{text}");
         }
         assert_eq!(bare_contact("ltltlt11", false), None);
@@ -1249,6 +1252,14 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
             json!({"reply":"收到，稍后店长联系您详聊。","contact_request":"",
                 "action":"reply","fields":{"wechat":value,"contact_method":"wechat"}})
         };
+    } else if last_contact_request && job.text.trim().chars().count() < MIN_WECHAT_CHARS
+        && !job.text.trim().is_empty()
+        && job.text.trim().bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && (decision["fields"]["phone"].is_string()
+            || decision["fields"]["wechat"].is_string()
+            || decision["reply"] == "收到，稍后店长联系您详聊。") {
+        decision = json!({"reply":"这串内容还不足 6 位。",
+            "contact_request":"方便留个联系方式再确认一下吗？","action":"reply","fields":{}});
     }
     // Older workflows may still request handoff. There are no live agents;
     // record a review item and acknowledge the limit without inventing a queue.
@@ -1285,6 +1296,18 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         }
         decision["action"] = json!("reply");
         decision.as_object_mut().unwrap().remove("reason");
+        if decision["fields"]["wechat"].as_str()
+            .is_some_and(|value| value.chars().count() < MIN_WECHAT_CHARS) {
+            let fields = decision["fields"].as_object_mut().unwrap();
+            fields.remove("wechat");
+            if !fields.contains_key("phone") && !fields.contains_key("contact_value") {
+                fields.remove("contact_method");
+                if decision["reply"] == "收到，稍后店长联系您详聊。" {
+                    decision["reply"] = json!("这串内容还不足 6 位。");
+                    decision["contact_request"] = json!("方便留个联系方式再确认一下吗？");
+                }
+            }
+        }
     }
     if action != "peer" && industry != "教育教培" {
         // Keep an older published prompt or a model slip from calling every shop's staff "老师".
@@ -1373,7 +1396,8 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             let new_contact = decision["fields"]["contact_method"] != "none"
                 && ["phone", "wechat"].iter().any(|key| {
                     decision["fields"][key].as_str().is_some_and(|value|
-                        (value.len() >= 5 || bare_contact.is_some_and(|(_, bare)| bare == value))
+                        (if *key == "wechat" { value.chars().count() >= MIN_WECHAT_CHARS }
+                            else { value.len() >= 5 })
                             && job.text.contains(value))
                 });
             let promised_now = decision["fields"]["contact_promised"] == true
@@ -1407,7 +1431,7 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                     .filter(|v| (v.len() >= 5 && v.len() <= 64
                         || bare_contact == Some(("phone", *v))) && job.text.contains(*v));
                 let wechat = fields["wechat"].as_str()
-                    .filter(|v| (v.len() >= 5 && v.len() <= 64
+                    .filter(|v| (v.chars().count() >= MIN_WECHAT_CHARS && v.len() <= 64
                         || bare_contact == Some(("wechat", *v)))
                         && job.text.contains(*v));
 
