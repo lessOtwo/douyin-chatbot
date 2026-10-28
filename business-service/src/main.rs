@@ -93,47 +93,32 @@ mod staff_title_tests {
     }
 }
 
-fn split_reply(text: &str) -> Vec<String> {
-    const SPLIT_LIMIT: usize = 60;
-    let text = text.trim();
-    let length = text.chars().count();
-    if length <= SPLIT_LIMIT {
-        return vec![text.to_owned()];
+const MAX_REPLY_CHARS: usize = 80;
+
+fn shorten_reply(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit { return text.to_owned(); }
+    let prefix: String = text.chars().take(limit).collect();
+    if let Some(end) = prefix.char_indices()
+        .filter(|(_, ch)| "。！？!?；;".contains(*ch))
+        .map(|(byte, ch)| byte + ch.len_utf8())
+        .filter(|end| prefix[..*end].chars().count() >= limit / 2)
+        .last() {
+        return prefix[..end].trim().to_owned();
     }
-    if let Some(contact_at) = text.find("留个联系方式") {
-        if let Some(boundary) = text[..contact_at].rfind(['。', '！', '？', '!', '?']) {
-            let boundary = boundary + text[boundary..].chars().next().unwrap().len_utf8();
-            let answer = text[..boundary].trim();
-            let request = text[boundary..].trim();
-            if !answer.is_empty() && !request.is_empty() {
-                let mut parts = split_reply(answer);
-                parts.push(request.to_owned());
-                return parts;
-            }
-        }
+    let mut result: String = text.chars().take(limit.saturating_sub(1)).collect();
+    result.push('…');
+    result
+}
+
+fn bare_contact<'a>(text: &'a str, last_asked: bool) -> Option<(&'static str, &'a str)> {
+    let value = text.trim();
+    if !last_asked || value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return None;
     }
-    let mut remaining = text;
-    let mut parts = Vec::new();
-    while remaining.chars().count() > SPLIT_LIMIT {
-        let remaining_length = remaining.chars().count();
-        let part_count = remaining_length.div_ceil(SPLIT_LIMIT);
-        let target = remaining_length.div_ceil(part_count);
-        let minimum = remaining_length - SPLIT_LIMIT * (part_count - 1);
-        let limit = remaining.char_indices().nth(SPLIT_LIMIT).map_or(remaining.len(), |(byte, _)| byte);
-        let boundary = remaining[..limit].char_indices()
-            .filter(|(_, ch)| "。！？!?；;，,".contains(*ch))
-            .map(|(byte, ch)| byte + ch.len_utf8())
-            .filter(|byte| remaining[..*byte].chars().count() >= minimum)
-            .min_by_key(|byte| remaining[..*byte].chars().count().abs_diff(target))
-            .unwrap_or_else(|| remaining.char_indices().nth(target)
-                .map_or(remaining.len(), |(byte, _)| byte));
-        let part = remaining[..boundary].trim();
-        if part.is_empty() { break; }
-        parts.push(part.to_owned());
-        remaining = remaining[boundary..].trim();
-    }
-    if !remaining.is_empty() { parts.push(remaining.to_owned()); }
-    parts
+    let bytes = value.as_bytes();
+    let mobile = bytes.len() == 11 && bytes[0] == b'1' && (b'3'..=b'9').contains(&bytes[1])
+        && bytes.iter().all(u8::is_ascii_digit);
+    Some((if mobile { "phone" } else { "wechat" }, value))
 }
 
 fn last_contact_request(db: &Connection, conversation: &str) -> Result<bool> {
@@ -194,15 +179,26 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
             .replace("电话", "联系方式")
             .replace("微信", "联系方式");
         if request.contains("留个联系方式") {
-            text.push_str(&request);
+            if text.chars().count() + request.chars().count() <= MAX_REPLY_CHARS {
+                text.push_str(&request);
+            } else {
+                let request_limit = MAX_REPLY_CHARS.saturating_sub(text.chars().count()).max(40);
+                let mut shortened = shorten_reply(&request, request_limit);
+                if !shortened.contains("留个联系方式") {
+                    shortened = shorten_reply(&request[request.find("留个联系方式").unwrap()..], request_limit);
+                }
+                let request = shortened;
+                let answer = shorten_reply(&text, MAX_REPLY_CHARS - request.chars().count());
+                return format!("{answer}{request}");
+            }
         }
     }
-    text
+    shorten_reply(&text, MAX_REPLY_CHARS)
 }
 
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{clear_contact_promise, compose_model_reply, split_reply};
+    use super::{bare_contact, clear_contact_promise, compose_model_reply, shorten_reply, MAX_REPLY_CHARS};
 
     #[test]
     fn clear_promise_requires_previous_request_and_excludes_other_material() {
@@ -215,23 +211,22 @@ mod contact_policy_tests {
     }
 
     #[test]
-    fn short_model_reply_stays_in_one_part() {
+    fn model_reply_stays_within_eighty_characters() {
         let text = compose_model_reply("可以维修窗户。", "留个联系方式，方便安排师傅上门。", true);
-        assert_eq!(split_reply(&text), vec![text]);
-        assert_eq!(split_reply(&"好".repeat(60)).len(), 1);
-        assert_eq!(split_reply(&"好".repeat(61)).len(), 2);
+        assert_eq!(text, "可以维修窗户。留个联系方式，方便安排师傅上门。");
+        assert_eq!(shorten_reply(&"好".repeat(80), MAX_REPLY_CHARS).chars().count(), 80);
+        assert_eq!(shorten_reply(&"好".repeat(81), MAX_REPLY_CHARS).chars().count(), 80);
     }
 
     #[test]
-    fn answer_then_ask_once_in_final_split_part() {
+    fn answer_then_ask_once_in_one_reply() {
         let reply = compose_model_reply(
             "事业编培训暂不在本店服务范围内，主要提供语言培训和成人学历提升。您可以说说目前的学历和学习目标，我们再帮您看看适合的课程。",
             "留个联系方式，方便为您介绍合适的课程。", true);
-        let parts = split_reply(&reply);
-        assert!(parts.len() >= 2);
-        assert!(parts[0].contains("暂不在本店服务范围"));
+        assert!(reply.chars().count() <= 80);
+        assert!(reply.contains("暂不在本店服务范围"));
         assert_eq!(reply.matches("留个联系方式").count(), 1);
-        assert!(parts.last().unwrap().contains("留个联系方式"));
+        assert!(reply.contains("留个联系方式"));
         assert!(!reply.contains("电话") && !reply.contains("微信"));
     }
 
@@ -242,22 +237,32 @@ mod contact_policy_tests {
     }
 
     #[test]
-    fn long_model_reply_splits_only_after_sixty_characters() {
+    fn long_model_reply_is_shortened_without_splitting() {
         let long = "这项服务可以做，具体要看现场情况。我们可以先了解门窗的尺寸和使用问题，再安排工作人员确认维修方案。您也可以告诉我们房屋目前的使用情况，便于进一步沟通。";
-        let parts = split_reply(long);
-        assert!(parts.len() >= 2);
-        assert!(parts.iter().all(|part| part.chars().count() <= 60));
-        assert_eq!(parts.join(""), long);
+        let reply = compose_model_reply(long, "", false);
+        assert!(reply.chars().count() <= 80);
+        assert!(reply.starts_with("这项服务可以做"));
     }
 
     #[test]
-    fn long_model_contact_reason_stays_in_final_part() {
+    fn long_model_contact_reason_stays_in_same_reply() {
         let answer = "可以维修，具体情况需要到现场确认。您先说说窗户哪里出现了问题，我们会结合现场状况给您建议。";
         let request = "方便留个联系方式吗？我们可以根据您说的窗户问题安排师傅查看，再和您确认合适的维修方案。";
         let text = compose_model_reply(answer, request, true);
-        let parts = split_reply(&text);
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[1], request);
+        assert!(text.chars().count() <= 80);
+        assert!(text.starts_with("可以维修"));
+        assert!(text.contains("留个联系方式"));
+    }
+
+    #[test]
+    fn bare_alphanumeric_reply_after_request_prefers_mobile_number() {
+        assert_eq!(bare_contact(" ltltlt11 ", true), Some(("wechat", "ltltlt11")));
+        assert_eq!(bare_contact("13545678901", true), Some(("phone", "13545678901")));
+        assert_eq!(bare_contact("12345678901", true), Some(("wechat", "12345678901")));
+        for text in ["", "abc_123", "微信号abc123", "abc-123", "abc 123"] {
+            assert_eq!(bare_contact(text, true), None, "{text}");
+        }
+        assert_eq!(bare_contact("ltltlt11", false), None);
     }
 }
 
@@ -1190,6 +1195,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         let db = app.db.lock().unwrap();
         last_contact_request(&db, &job.conversation)?
     };
+    let bare_contact = bare_contact(&job.text, last_contact_request);
     let contact_request_allowed = {
         let db = app.db.lock().unwrap();
         let (promised, has_contact): (bool, bool) = db.query_row(
@@ -1197,7 +1203,8 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
              FROM conversations WHERE id=?1",
             [&job.conversation], |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        !promised && !has_contact && !clear_contact_promise(&job.text, last_contact_request)
+        !promised && !has_contact && bare_contact.is_none()
+            && !clear_contact_promise(&job.text, last_contact_request)
     };
     let content = match (&job.image_mime, &job.image_data) {
         (Some(mime), Some(bytes)) => json!([
@@ -1234,6 +1241,15 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
     let mut decision: Value = serde_json::from_str(content).map_err(|_| {
         flow_error("FastGPT must return the configured decision JSON", content)
     })?;
+    if let Some((kind, value)) = bare_contact {
+        decision = if kind == "phone" {
+            json!({"reply":"收到，稍后店长联系您详聊。","contact_request":"",
+                "action":"reply","fields":{"phone":value,"contact_method":"phone"}})
+        } else {
+            json!({"reply":"收到，稍后店长联系您详聊。","contact_request":"",
+                "action":"reply","fields":{"wechat":value,"contact_method":"wechat"}})
+        };
+    }
     // Older workflows may still request handoff. There are no live agents;
     // record a review item and acknowledge the limit without inventing a queue.
     if decision["action"] == "handoff" {
@@ -1349,17 +1365,19 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             )?;
         }
         if applied {
+            let last_asked = last_contact_request(&tx, &job.conversation)?;
+            let bare_contact = bare_contact(&job.text, last_asked);
             let has_contact: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM leads WHERE conversation_id=?1)",
                 [&job.conversation], |row| row.get(0))?;
             let new_contact = decision["fields"]["contact_method"] != "none"
                 && ["phone", "wechat"].iter().any(|key| {
                     decision["fields"][key].as_str().is_some_and(|value|
-                        value.len() >= 5 && job.text.contains(value))
+                        (value.len() >= 5 || bare_contact.is_some_and(|(_, bare)| bare == value))
+                            && job.text.contains(value))
                 });
             let promised_now = decision["fields"]["contact_promised"] == true
-                || clear_contact_promise(&job.text,
-                    last_contact_request(&tx, &job.conversation)?);
+                || clear_contact_promise(&job.text, last_asked);
             let project_selection_only = decision["fields"]["project_selection_only"] == true;
             let model_contact_request = decision["contact_request"].as_str().unwrap_or("");
             let text = if decision["action"] == "peer" {
@@ -1377,19 +1395,21 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             }
             let at_limit = reply_rounds + 1 == MAX_REPLY_ROUNDS;
             let source = if at_limit { "bot_handoff" } else { "bot" };
-            for (part_index, part) in split_reply(&text).iter().enumerate() {
-                tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    params![id(),job.id,job.conversation,revision,part,source,part_index as i64])?;
-            }
+            let text = shorten_reply(&text, MAX_REPLY_CHARS);
+            tx.execute("INSERT INTO outbox(id,event_id,conversation_id,revision,text,source,part_index) VALUES(?1,?2,?3,?4,?5,?6,0)",
+                params![id(),job.id,job.conversation,revision,text,source])?;
             tx.execute("UPDATE conversations SET reply_rounds=reply_rounds+1 WHERE id=?1", [&job.conversation])?;
             // Candidate only: does not assert verification, CRM delivery or successful contact.
             if decision["action"] != "stop" && decision["action"] != "peer" {
                 let fields = &decision["fields"];
                 let method = fields["contact_method"].as_str();
                 let phone = fields["phone"].as_str()
-                    .filter(|v| v.len() >= 5 && v.len() <= 64 && job.text.contains(*v));
+                    .filter(|v| (v.len() >= 5 && v.len() <= 64
+                        || bare_contact == Some(("phone", *v))) && job.text.contains(*v));
                 let wechat = fields["wechat"].as_str()
-                    .filter(|v| v.len() >= 5 && v.len() <= 64 && job.text.contains(*v));
+                    .filter(|v| (v.len() >= 5 && v.len() <= 64
+                        || bare_contact == Some(("wechat", *v)))
+                        && job.text.contains(*v));
 
                 // A later customer message may change the permitted channel without repeating
                 // the number. The model identifies the earlier value; the database must confirm it.

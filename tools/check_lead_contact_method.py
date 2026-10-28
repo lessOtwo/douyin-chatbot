@@ -33,6 +33,11 @@ class Model(BaseHTTPRequestHandler):
         if text == "我是安装木门的，电话13500000000":
             decision = {"reply": "不用呢 谢谢", "action": "peer", "fields": {"phone": "13500000000"}}
             fields = None
+        elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "详细介绍"):
+            decision = {"reply": "可以咨询成人学历提升。" + ("我们会按您的学历情况介绍可选学习路径。" * 5 if text == "详细介绍" else ""),
+                        "contact_request": "留个联系方式，方便我们按您的情况介绍课程。",
+                        "action": "reply", "fields": {}}
+            fields = None
         elif text == "别打电话，加我微信":
             fields = {"contact_method": "wechat", "contact_value": "13700000000"}
         elif text == "手机号13900000000，加我微信不要打电话":
@@ -72,6 +77,16 @@ def wait_for(base, conversation, expected):
             return rows
         time.sleep(0.1)
     raise AssertionError(f"lead channel did not become {expected}: {rows}")
+
+
+def wait_for_event_reply(base, event_id):
+    for _ in range(100):
+        rows = [row for row in call(base, "/api/snapshot")["outbox"]
+                if row["event_id"] == event_id]
+        if rows and all(row["status"] == "mock_sent" for row in rows):
+            return rows
+        time.sleep(0.1)
+    raise AssertionError(f"reply not sent for {event_id}: {rows}")
 
 
 def main():
@@ -152,11 +167,35 @@ def main():
                         time.sleep(0.1)
                     assert len(replies) == 2 and all(o["text"] == "不用呢 谢谢" for o in replies), replies
                     assert not [lead for lead in snapshot["leads"] if lead["conversation_id"] == peer["conversation_id"]]
+                    first = send(10, "bare-wechat", "专升本")
+                    asked = wait_for_event_reply(base, first["id"])
+                    assert len(asked) == 1 and "留个联系方式" in asked[0]["text"], asked
+                    bare = send(11, "bare-wechat", "ltltlt11")
+                    wait_for(base, bare["conversation_id"], [("wechat", "ltltlt11")])
+                    acknowledged = wait_for_event_reply(base, bare["id"])
+                    assert len(acknowledged) == 1 and acknowledged[0]["text"] == "收到，稍后店长联系您详聊。", acknowledged
+                    phone_first = send(14, "bare-phone", "专升本")
+                    wait_for_event_reply(base, phone_first["id"])
+                    bare_phone = send(15, "bare-phone", "13545678901")
+                    wait_for(base, bare_phone["conversation_id"], [("phone", "13545678901")])
+                    wait_for_event_reply(base, bare_phone["id"])
+                    no_request = send(12, "no-prior-request", "abc123")
+                    wait_for_event_reply(base, no_request["id"])
+                    assert not [lead for lead in call(base, "/api/snapshot")["leads"]
+                                if lead["conversation_id"] == no_request["conversation_id"]]
+                    long = send(13, "long-reply", "详细介绍")
+                    one = wait_for_event_reply(base, long["id"])
+                    assert len(one) == 1 and len(one[0]["text"]) <= 80, one
+                    assert "可以咨询成人学历提升" in one[0]["text"] and "留个联系方式" in one[0]["text"], one
                     print(json.dumps({"result": "passed", "checks": [
                         "phone call", "phone used for WeChat search", "explicit WeChat ID",
                         "later channel preference updates existing candidate without losing source",
                         "a new number does not change the previous number's channel",
-                        "peer reply remains fixed and creates no leads"]}))
+                        "peer reply remains fixed and creates no leads",
+                        "bare alphanumeric reply after a request becomes a WeChat lead",
+                        "Chinese mobile number takes priority over WeChat ID",
+                        "bare alphanumeric message without a previous request creates no lead",
+                        "one reply per turn with at most 80 characters"]}))
                 except Exception:
                     log.flush()
                     print((temp / "service.log").read_text(encoding="utf-8", errors="replace")[-3000:])
