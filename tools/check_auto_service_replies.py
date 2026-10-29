@@ -49,7 +49,8 @@ for decision in (first, second):
     assert '可预约' not in decision['reply'] and '已安排' not in decision['reply'], decision
 assert re.search('周六|2点|两点', first['reply']), first
 assert re.search('申请|协调|确认', first['reply']), first
-assert '空调滤芯' in second['reply'] or '防冻液' in second['reply'], second
+assert '空调滤芯' in second['reply'] and '防冻液' in second['reply'], second
+assert '可做' not in second['reply'] and '能做' not in second['reply'], second
 assert not re.match(r'^(?:基础)?(?:小保养|日常保养).{0,7}(?:可做|能做)',
                     second['reply']), second
 print(json.dumps({'result': 'passed', 'first': first, 'second': second}, ensure_ascii=False))

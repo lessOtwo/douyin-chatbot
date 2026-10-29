@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '0043faa'
+BASELINE = '71b7edb'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
@@ -85,8 +85,8 @@ def main():
     if len(before_parts) != len(after_parts):
         raise RuntimeError('System prompt paragraph structure changed')
     changes = [(old, new) for old, new in zip(before_parts, after_parts) if old != new]
-    if len(changes) != 3:
-        raise RuntimeError(f'Expected three prompt paragraphs, got {len(changes)}')
+    if len(changes) != 1:
+        raise RuntimeError(f'Expected one prompt paragraph, got {len(changes)}')
 
     target = copy.deepcopy(published)
     live_prompts = node_inputs(target)
@@ -99,7 +99,8 @@ def main():
         if node_id in ('retry_reply', 'normal_reply'):
             old_extra = old_prompts[node_id]['value'].rsplit('\n', 1)[-1]
             new_extra = new_prompts[node_id]['value'].rsplit('\n', 1)[-1]
-            value = replace_once(value, old_extra, new_extra, f'{node_id} branch instruction')
+            if old_extra != new_extra:
+                value = replace_once(value, old_extra, new_extra, f'{node_id} branch instruction')
         live_prompts[node_id]['value'] = value
 
     print(f'Ready: {version}; changed {len(AI_NODES)} AI prompt nodes')
