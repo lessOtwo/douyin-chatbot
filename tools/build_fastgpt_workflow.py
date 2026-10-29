@@ -106,7 +106,7 @@ def build(model):
     ]
     normal_reply = next(node for node in nodes if node["nodeId"] == "normal_reply")
     normal_prompt = next(item for item in normal_reply["inputs"] if item["key"] == "systemPrompt")
-    normal_prompt["value"] += "\n各话术类别的 contact_request 必须点明具体沟通事项：服务型为该预约时间是否有空闲工作人员可接待或上门，批发型为折扣，零售型为不同型号或档次的差异和特性；同时点明由门店或工作人员与客户沟通。不能只写‘详细沟通’。"
+    normal_prompt["value"] += "\n各话术类别的 contact_request 必须点明具体沟通事项：服务型为该预约时间是否有空闲工作人员可接待或上门，批发型为折扣，零售型为不同型号或档次的差异和特性；同时点明由门店或工作人员与客户沟通。不能只写‘详细沟通’。reply 不得写索要联系方式的话；contact_request 必须是一句完整邀请，包含‘留个联系方式’及具体沟通理由。"
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
              edge("lead_intent", "stop_reply", "stop"),

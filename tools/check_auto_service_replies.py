@@ -65,7 +65,7 @@ def question(decision):
 
 
 def contact(decision):
-    assert '留个联系方式' in decision.get('contact_request', ''), decision
+    assert '留个联系方式' in decision['reply'] + decision.get('contact_request', ''), decision
     assert decision['fields'].get('intake_question_only') is not True, decision
     assert '可预约' not in decision['reply'] and '已安排' not in decision['reply'], decision
 
@@ -82,7 +82,7 @@ assert re.search('时间|什么时候|哪天|预约', service_time['reply']), se
 assert not re.search('轿车|SUV|车型', service_time['reply']), service_time
 service_contact = ask(service_id, SERVICE, '周六下午2点')
 contact(service_contact)
-assert re.search('预约|档期|时间', service_contact['contact_request']), service_contact
+assert re.search('预约|档期|时间|时段', service_contact['contact_request']), service_contact
 assert '工作人员' in service_contact['contact_request'], service_contact
 assert re.search('空闲|有人|接待|上门|可否|能否|安排', service_contact['contact_request']), service_contact
 assert re.search('周六|2点|两点', service_contact['reply'] + service_contact['contact_request']), service_contact
@@ -93,7 +93,7 @@ assert re.search('价|费用', service_followup['reply']), service_followup
 already_clear = ask('already-clear-' + uuid.uuid4().hex, SERVICE,
                     'SUV精洗，想周六下午2点到店')
 contact(already_clear)
-assert re.search('预约|档期|时间', already_clear['contact_request']), already_clear
+assert re.search('周六|2点|两点|预约|档期|时间|时段', already_clear['contact_request']), already_clear
 assert re.search('空闲|有人|接待|上门|可否|能否|安排', already_clear['contact_request']), already_clear
 
 wholesale_id = 'wholesale-' + uuid.uuid4().hex

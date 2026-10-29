@@ -209,7 +209,14 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
             .replace("电话或微信", "联系方式")
             .replace("电话/微信", "联系方式")
             .replace("电话", "联系方式")
-            .replace("微信", "联系方式");
+            .replace("微信", "联系方式")
+            .replace("留下联系方式", "留个联系方式")
+            .replace("留一下联系方式", "留个联系方式");
+        let request = if request.contains("留个联系方式") {
+            request
+        } else {
+            format!("方便留个联系方式，{request}")
+        };
         if request.contains("留个联系方式") {
             if text.chars().count() + request.chars().count() <= MAX_REPLY_CHARS {
                 text.push_str(&request);
@@ -268,6 +275,17 @@ mod contact_policy_tests {
     fn after_contact_answer_without_asking() {
         let reply = compose_model_reply("成人学历提升可咨询学习安排。", "留个联系方式，方便细聊。", false);
         assert_eq!(reply, "成人学历提升可咨询学习安排。");
+    }
+
+    #[test]
+    fn misplaced_model_invitation_keeps_generated_reason() {
+        let reply = compose_model_reply(
+            "全包围款覆盖更完整。方便留个联系方式。",
+            "不同型号的差异和特性需要工作人员与您沟通。", true);
+        assert!(reply.starts_with("全包围款覆盖更完整。"));
+        assert_eq!(reply.matches("留个联系方式").count(), 1);
+        assert!(reply.contains("不同型号的差异和特性"));
+        assert!(reply.chars().count() <= 80);
     }
 
     #[test]

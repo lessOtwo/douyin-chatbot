@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '60af129'
+BASELINE = '30cec60'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
