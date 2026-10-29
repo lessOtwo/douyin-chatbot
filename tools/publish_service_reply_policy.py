@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '50c8b1a'
+BASELINE = '0140f23'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
@@ -85,8 +85,6 @@ def main():
     if len(before_parts) != len(after_parts):
         raise RuntimeError('System prompt paragraph structure changed')
     changes = [(old, new) for old, new in zip(before_parts, after_parts) if old != new]
-    if not changes:
-        raise RuntimeError('System prompt has no changes to publish')
 
     target = copy.deepcopy(published)
     live_prompts = node_inputs(target)
@@ -104,6 +102,12 @@ def main():
             else:
                 value = replace_once(value, old, new, f'{node_id} paragraph {index}')
         if node_id in ('contact_reply', 'retry_reply', 'normal_reply'):
+            old_full = old_prompts[node_id]['value']
+            new_full = new_prompts[node_id]['value']
+            if new_full.startswith(old_full) and new_full != old_full:
+                value += new_full[len(old_full):]
+                live_prompts[node_id]['value'] = value
+                continue
             old_extra = old_prompts[node_id]['value'].rsplit('\n', 1)[-1]
             new_extra = new_prompts[node_id]['value'].rsplit('\n', 1)[-1]
             if old_extra != new_extra:
