@@ -138,6 +138,18 @@ fn short_contact_candidate(text: &str, last_asked: bool) -> bool {
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+fn normalize_wechat_contact(fields: &mut Value, text: &str) {
+    if fields["contact_method"] != "wechat" || fields["wechat"].is_string() {
+        return;
+    }
+    if let Some(value) = fields["contact_value"].as_str() {
+        if (MIN_WECHAT_CHARS..=64).contains(&value.chars().count())
+            && text.contains(value) {
+            fields["wechat"] = json!(value);
+        }
+    }
+}
+
 fn contact_confirmation(fields: &Value, text: &str) -> Option<&'static str> {
     let phone = fields["phone"].as_str().is_some_and(|value|
         (5..=64).contains(&value.len()) && text.contains(value));
@@ -159,7 +171,7 @@ fn last_contact_request(db: &Connection, conversation: &str) -> Result<bool> {
          AND status IN ('accepted','mock_sent') ORDER BY rowid DESC LIMIT 1",
         [conversation], |row| row.get(0),
     ).optional()?;
-    Ok(last.is_some_and(|text| text.contains("留个联系方式")))
+    Ok(last.is_some_and(|text| text.contains("留个联系方式") || text == SHORT_CONTACT_REPLY))
 }
 
 fn clear_contact_promise(text: &str, last_asked: bool) -> bool {
@@ -238,7 +250,8 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
 #[cfg(test)]
 mod contact_policy_tests {
     use super::{bare_contact, clear_contact_promise, compose_model_reply, contact_confirmation,
-        short_contact_candidate, shorten_reply, PHONE_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
+        last_contact_request, normalize_wechat_contact, short_contact_candidate, shorten_reply,
+        PHONE_CONTACT_REPLY, SHORT_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
     use serde_json::json;
 
     #[test]
@@ -334,6 +347,25 @@ mod contact_policy_tests {
             "13700000000 abc12345"), Some(PHONE_CONTACT_REPLY));
         assert_eq!(contact_confirmation(&json!({"wechat":"abc12","contact_method":"wechat"}),
             "微信号是abc12"), None);
+    }
+
+    #[test]
+    fn corrected_wechat_after_short_contact_prompt_is_recordable() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE outbox(conversation_id TEXT, source TEXT, status TEXT, text TEXT);").unwrap();
+        db.execute("INSERT INTO outbox VALUES('case','bot','mock_sent',?1)", [SHORT_CONTACT_REPLY]).unwrap();
+        assert!(last_contact_request(&db, "case").unwrap());
+        assert_eq!(bare_contact("iq857iq", true), Some(("wechat", "iq857iq")));
+
+        let text = "iq857iq，刚才少打了两个字母";
+        let mut fields = json!({"contact_method":"wechat","contact_value":"iq857iq"});
+        normalize_wechat_contact(&mut fields, text);
+        assert_eq!(fields["wechat"], "iq857iq");
+        assert_eq!(contact_confirmation(&fields, text), Some(WECHAT_CONTACT_REPLY));
+
+        let mut invalid = json!({"contact_method":"wechat","contact_value":"iq857"});
+        normalize_wechat_contact(&mut invalid, "iq857，刚才少打了");
+        assert!(invalid["wechat"].is_null());
     }
 }
 
@@ -1332,6 +1364,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         decision = json!({"reply":SHORT_CONTACT_REPLY,
             "contact_request":"","action":"reply","fields":{}});
     }
+    normalize_wechat_contact(&mut decision["fields"], &job.text);
     // Older workflows may still request handoff. There are no live agents;
     // record a review item and acknowledge the limit without inventing a queue.
     if decision["action"] == "handoff" {
