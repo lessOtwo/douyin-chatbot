@@ -98,6 +98,12 @@ const MIN_WECHAT_CHARS: usize = 6;
 const PHONE_CONTACT_REPLY: &str = "好的，稍后工作人员会给您致电沟通";
 const WECHAT_CONTACT_REPLY: &str = "好的，稍后加您沟通，留意通过下";
 const SHORT_CONTACT_REPLY: &str = "麻烦您确认下您发的联系方式是否有问题";
+const LEGACY_CONTACT_REPLY: &str = "收到，稍后店长联系您详聊。";
+
+fn is_contact_reply(reply: &Value) -> bool {
+    reply.as_str().is_some_and(|reply|
+        [PHONE_CONTACT_REPLY, WECHAT_CONTACT_REPLY, LEGACY_CONTACT_REPLY].contains(&reply))
+}
 
 fn shorten_reply(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit { return text.to_owned(); }
@@ -1299,7 +1305,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         && job.text.trim().bytes().all(|byte| byte.is_ascii_alphanumeric())
         && (decision["fields"]["phone"].is_string()
             || decision["fields"]["wechat"].is_string()
-            || decision["reply"] == "收到，稍后店长联系您详聊。") {
+            || is_contact_reply(&decision["reply"])) {
         decision = json!({"reply":SHORT_CONTACT_REPLY,
             "contact_request":"","action":"reply","fields":{}});
     }
@@ -1344,7 +1350,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
             fields.remove("wechat");
             if !fields.contains_key("phone") && !fields.contains_key("contact_value") {
                 fields.remove("contact_method");
-                if decision["reply"] == "收到，稍后店长联系您详聊。" {
+                if is_contact_reply(&decision["reply"]) {
                     decision["reply"] = json!(SHORT_CONTACT_REPLY);
                     decision["contact_request"] = json!("");
                 }

@@ -55,7 +55,9 @@ class Model(BaseHTTPRequestHandler):
         else:
             raise AssertionError("unexpected model fixture input: " + text)
         if fields is not None:
-            decision = {"reply": "收到，稍后店长联系您详聊。", "action": "reply", "fields": fields}
+            decision = {"reply": "好的，稍后加您沟通，留意通过下" if fields["contact_method"] == "wechat"
+                        else "好的，稍后工作人员会给您致电沟通",
+                        "action": "reply", "fields": fields}
         data = json.dumps({"choices": [{"message": {"content": json.dumps(decision, ensure_ascii=False)}}]},
                           ensure_ascii=False).encode("utf-8")
         self.send_response(200)

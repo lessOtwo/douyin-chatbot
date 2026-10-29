@@ -75,7 +75,7 @@ def main():
     assert "留" not in store_phone["reply"], store_phone
     assert "肥城" in coverage["reply"] and len(coverage["reply"]) <= 70, coverage
     assert "电话" not in coverage["reply"] and "微信" not in coverage["reply"], coverage
-    assert lead["reply"] == "收到，稍后店长联系您详聊。", lead
+    assert lead["reply"] == "好的，稍后工作人员会给您致电沟通", lead
     assert lead["fields"].get("phone") == "13800000000", lead
     assert preference["fields"].get("contact_method") == "wechat", preference
     assert preference["fields"].get("contact_value") == "13800000000", preference

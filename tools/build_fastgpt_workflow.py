@@ -96,7 +96,7 @@ def build(model):
     nodes = [
         start, classify, peer, stop,
         ai("lead_received_reply", "首次留资确认", 1510, 130,
-           "客户本轮明确主动留下本人联系方式。只输出约定 JSON：reply 必须逐字为‘收到，稍后店长联系您详聊。’，action=reply；fields 中的 phone 和/或 wechat 只取本轮本人主动留下的原文，并给出 contact_method。客户说‘不要打电话’或‘加我微信’且只留下手机号时，phone 保留手机号、contact_method=wechat，不要伪造独立微信号。不得提取引用、否定或第三方联系方式。不要追加问题或解释。"),
+           "客户本轮明确主动留下本人联系方式。只输出约定 JSON：contact_method=wechat 时 reply 必须逐字为‘好的，稍后加您沟通，留意通过下’；contact_method=phone 时 reply 必须逐字为‘好的，稍后工作人员会给您致电沟通’，action=reply；fields 中的 phone 和/或 wechat 只取本轮本人主动留下的原文，并给出 contact_method。客户说‘不要打电话’或‘加我微信’且只留下手机号时，phone 保留手机号、contact_method=wechat，不要伪造独立微信号。不得提取引用、否定或第三方联系方式。不要追加问题或解释。"),
         ai("contact_reply", "商家联系方式答疑", 1510, 390,
            "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。reply 不出现电话、微信二词；如 contact_request_allowed=true，另写结合当前问题的 contact_request，不把它写入 reply。只输出约定 JSON。"),
         ai("retry_reply", "拒绝后继续答疑", 1510, 650,
@@ -202,7 +202,7 @@ def install_draft(flow, base, model, smoke_test=False):
     lead_received_prompt = next(item.get("value", "") for node in detail["nodes"]
                                 if node["nodeId"] == "lead_received_reply"
                                 for item in node.get("inputs", []) if item.get("key") == "systemPrompt")
-    if "收到，稍后店长联系您详聊。" not in lead_received_prompt or not any(
+    if not all(reply in lead_received_prompt for reply in ("好的，稍后加您沟通，留意通过下", "好的，稍后工作人员会给您致电沟通")) or not any(
             edge_item["source"] == "lead_intent" and
             edge_item["target"] == "lead_received_reply" and
             edge_item["sourceHandle"] == "lead_intent-source-lead_provided"
@@ -267,7 +267,7 @@ def install_draft(flow, base, model, smoke_test=False):
         if specific["action"] != "reply" or "老房翻新" not in specific["reply"]:
             raise RuntimeError("FastGPT smoke test did not answer matched project: " + repr(specific))
         provided = run_smoke("我的电话是13800000000")
-        if (provided["action"] != "reply" or provided["reply"] != "收到，稍后店长联系您详聊。" or
+        if (provided["action"] != "reply" or provided["reply"] != "好的，稍后工作人员会给您致电沟通" or
                 provided.get("fields", {}).get("phone") != "13800000000"):
             raise RuntimeError("FastGPT smoke test did not acknowledge and extract customer contact: " + repr(provided))
         stopped = run_smoke("不要再联系我")
