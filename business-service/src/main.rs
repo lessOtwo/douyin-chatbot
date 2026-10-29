@@ -190,6 +190,16 @@ fn clear_contact_promise(text: &str, last_asked: bool) -> bool {
     sends && agrees && !uncertain && (!other_material || contact)
 }
 
+fn can_request_contact(
+    promised: bool,
+    has_contact: bool,
+    last_asked: bool,
+    has_bare_contact: bool,
+    promised_now: bool,
+) -> bool {
+    !promised && !has_contact && !last_asked && !has_bare_contact && !promised_now
+}
+
 fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String {
     let mut text = reply.trim()
         .replace("电话或微信", "联系方式")
@@ -249,7 +259,7 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
 
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{bare_contact, clear_contact_promise, compose_model_reply, contact_confirmation,
+    use super::{bare_contact, can_request_contact, clear_contact_promise, compose_model_reply, contact_confirmation,
         last_contact_request, normalize_wechat_contact, short_contact_candidate, shorten_reply,
         PHONE_CONTACT_REPLY, SHORT_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
     use serde_json::json;
@@ -262,6 +272,13 @@ mod contact_policy_tests {
             assert!(!clear_contact_promise(text, true), "{text}");
         }
         assert!(!clear_contact_promise("行，你等我把信息整理整理发给你", false));
+    }
+
+    #[test]
+    fn previous_invitation_suppresses_the_next_one() {
+        assert!(can_request_contact(false, false, false, false, false));
+        assert!(!can_request_contact(false, false, true, false, false));
+        assert!(!can_request_contact(false, true, false, false, false));
     }
 
     #[test]
@@ -1314,8 +1331,8 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
              FROM conversations WHERE id=?1",
             [&job.conversation], |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        !promised && !has_contact && bare_contact.is_none()
-            && !clear_contact_promise(&job.text, last_contact_request)
+        can_request_contact(promised, has_contact, last_contact_request,
+            bare_contact.is_some(), clear_contact_promise(&job.text, last_contact_request))
     };
     let content = match (&job.image_mime, &job.image_data) {
         (Some(mime), Some(bytes)) => json!([
@@ -1512,7 +1529,9 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                 SHORT_CONTACT_REPLY.to_string()
             } else {
                 compose_model_reply(&model_reply, model_contact_request,
-                    !has_contact && !new_contact && !contact_promised && !promised_now
+                    can_request_contact(contact_promised, has_contact, last_asked,
+                        bare_contact.is_some(), promised_now)
+                        && !new_contact
                         && !project_selection_only && !intake_question_only)
             };
             if promised_now && decision["action"] != "peer" {

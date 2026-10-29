@@ -13,6 +13,8 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
+from workflow_dialogue import reshape_flow
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "FastGPT/packages/service/test/core/workflow/simple.json"
@@ -42,19 +44,16 @@ def build(model):
             {"key": "model", "renderTypeList": ["selectLLMModel", "reference"],
              "valueType": "string", "label": "模型", "value": model, "required": True},
             {"key": "systemPrompt", "renderTypeList": ["textarea", "reference"],
-             "valueType": "string", "label": "分类背景", "value": "只根据客户私信正文和历史私信判断是否为同行，不使用昵称。只有客户在正文中主动推销、招揽自己的商品或服务才归 peer，不受行业是否相同影响。客户本轮主动留下本人联系方式归 lead_provided；明确答应稍后提供本人联系方式归 normal；询问商家联系方式归 merchant_contact；拒绝留资或要求停止联系等尚未留资消息归 lead_retry；其余非同行消息归 normal。不要使用 stop。不要把询问商家号码、引用他人号码、否定留资或假设号码归为客户已留资。"},
+             "valueType": "string", "label": "分类背景", "value": "只根据客户私信正文和历史私信分流，不使用昵称。客户主动推销、招揽自己的商品或服务归 peer；客户本轮首次留下或补全本人联系方式归 lead_provided；其余全部归 normal，包括询问商家联系方式、拒绝留资、答应稍后提供和已有线索后的联系偏好更正。不要把询问商家号码、引用他人号码、否定留资或假设号码归为 lead_provided。"},
             {"key": "history", "renderTypeList": ["numberInput", "reference"],
              "valueType": "chatHistory", "label": "对话历史", "value": 20, "required": True},
             {"key": "userChatInput", "renderTypeList": ["reference", "textarea"],
              "valueType": "string", "label": "客户消息", "value": ["workflowStartNodeId", "userChatInput"], "required": True},
             {"key": "agents", "renderTypeList": ["custom"], "valueType": "any", "label": "分类",
              "value": [
-                 {"key": "peer", "value": "客户私信正文主动推销或招揽自己的商家、服务业务，即使与当前商家行业不同也归此类；不得依据昵称判断"},
-                {"key": "stop", "value": "不使用此分类；停止联系请求按非同行消息继续答疑，由业务服务在未留资时追加邀请"},
-                 {"key": "lead_provided", "value": "客户本轮明确留下本人电话或微信，例如‘我的电话是13800000000’或‘我的微信是abc12345’"},
-                 {"key": "merchant_contact", "value": "客户询问商家微信或电话号码"},
-                {"key": "lead_retry", "value": "尚未留资客户拒绝留资、要求停止联系、犹豫或要求别再问；仍继续答疑，由业务服务在末尾追加联系方式邀请"},
-                 {"key": "normal", "value": "其余非同行消息，包括普通咨询、询价、项目问题或已留资后的联系渠道更正"},
+                {"key": "peer", "value": "客户正文主动推销、招揽自己的商品或服务；不得依据昵称判断"},
+                {"key": "lead_provided", "value": "客户本轮首次留下或补全本人电话、微信；不得提取引用或第三方联系方式"},
+                {"key": "normal", "value": "其余消息，包括普通咨询、询问商家联系方式、拒绝留资及已有线索后的联系偏好更正"},
              ]},
         ],
         "outputs": [{"id": "cqResult", "key": "cqResult", "type": "static",
@@ -75,15 +74,6 @@ def build(model):
                 item["value"] = 1200
         return node
 
-    stop = {
-        "nodeId": "stop_reply", "name": "非同行答疑兜底", "intro": "若分类误入此分支仍继续会话",
-        "avatar": "core/workflow/template/reply", "flowNodeType": "answerNode",
-        "position": {"x": 1510, "y": -120},
-        "inputs": [{"key": "text", "renderTypeList": ["textarea", "reference"],
-                    "valueType": "any", "label": "回复内容", "required": True,
-                    "value": '{"reply":"您想了解哪个项目？","action":"reply","fields":{}}'}],
-        "outputs": [],
-    }
     peer = {
         "nodeId": "peer_reply", "name": "同行固定回复", "intro": "同行不进入留资分支",
         "avatar": "core/workflow/template/reply", "flowNodeType": "answerNode",
@@ -94,13 +84,9 @@ def build(model):
         "outputs": [],
     }
     nodes = [
-        start, classify, peer, stop,
+        start, classify, peer,
         ai("lead_received_reply", "首次留资确认", 1510, 130,
            "客户本轮明确主动留下本人联系方式。只输出约定 JSON：contact_method=wechat 时 reply 必须逐字为‘好的，稍后加您沟通，留意通过下’；contact_method=phone 时 reply 必须逐字为‘好的，稍后工作人员会给您致电沟通’，action=reply；fields 中的 phone 和/或 wechat 只取本轮本人主动留下的原文，并给出 contact_method。客户说‘不要打电话’或‘加我微信’且只留下手机号时，phone 保留手机号、contact_method=wechat，不要伪造独立微信号。不得提取引用、否定或第三方联系方式。不要追加问题或解释。"),
-        ai("contact_reply", "商家联系方式答疑", 1510, 390,
-           "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。reply 不出现电话、微信二词；仅在已进入留资阶段且 contact_request_allowed=true 时另写符合话术类别和当前阶段的 contact_request，不把它写入 reply；阶段提问时为空。只输出约定 JSON。"),
-        ai("retry_reply", "拒绝后继续答疑", 1510, 650,
-           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；能做的项目直接回答具体需求，只有确定不能做才在开头说明；未经确认的预约时间只能说可帮忙申请或协调，不能承诺该时段有空位。不设置 contact_refused，不返回 stop。遵循历史和话术类别：服务型尚未获知预约时间、批发型尚未问购买数量、零售型尚未问型号或档次时只问下一项，不索要；进入留资阶段且 contact_request_allowed=true 时另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
         ai("normal_reply", "商家项目答疑", 1510, 910,
            "先根据已审核商家资料和项目分组回答当前问题；能做的项目直接回答具体需求，不用“某项目可做”作开头；只有 excluded 或未配置项目才在开头说明不能做。具体价格或预约档期未知时说可向门店确认或申请，不把指定时段说成已可预约。只有 main、available 是本店可做项目；不要漏答客户当前问题。客户仅打招呼或需求不明时，按 main、available 项目引导并设置 fields.project_selection_only=true，不索要。客户有明确需求时按已审核“话术类别”单选值和历史推进：到店/上门服务型有明确需求时直接问预约时间，不先问服务目标细分；工厂批发型先问购买数量；零售型先问不同型号或档次。旧资料“资料或服务=预约时间/折扣”分别按服务型/批发型处理，其他旧资料才按实际需求推断。已给的信息直接沿用；问阶段问题时设置 fields.intake_question_only=true，contact_request 为空；每轮只问一项。进入留资阶段后，分别以该预约时间是否有空闲工作人员可接待或上门、该数量的折扣、不同型号或档次的差异和特性需要门店或工作人员与客户沟通为理由索要联系方式。reply 仍先答复客户问题；零售型先简述有依据的差异或特点，再由工作人员详细沟通。具体参数不明时如实说明需核对，不编造型号规格；不编造已确认的档期、折扣或价格。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。完成上述阶段后，若 contact_request_allowed=true，每轮自由答疑并另写变化表达和理由的 contact_request；不返回 stop。只输出约定 JSON。"),
     ]
@@ -109,10 +95,7 @@ def build(model):
     normal_prompt["value"] += "\n各话术类别的 contact_request 必须点明具体沟通事项：服务型为该预约时间是否有空闲工作人员可接待或上门，批发型为折扣，零售型为不同型号或档次的差异和特性；同时点明由门店或工作人员与客户沟通。不能只写‘详细沟通’。reply 不得写索要联系方式的话；contact_request 必须是一句完整邀请，包含‘留个联系方式’及具体沟通理由。"
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
-             edge("lead_intent", "stop_reply", "stop"),
              edge("lead_intent", "lead_received_reply", "lead_provided"),
-             edge("lead_intent", "contact_reply", "merchant_contact"),
-             edge("lead_intent", "retry_reply", "lead_retry"),
              edge("lead_intent", "normal_reply", "normal")]
     chat_config = {"variables": [
         {"key": key, "label": label, "description": "业务服务提供", "type": "custom", "valueType": "string", "defaultValue": ""}
@@ -124,9 +107,9 @@ def build(model):
             ("merchant_profile", "已审核商家资料")
         ]
     ]}
-    return {"name": "抖音私信留资工作流（草稿）", "type": "advanced",
+    return reshape_flow({"name": "抖音私信留资工作流（草稿）", "type": "advanced",
             "intro": "按已审核项目资料答疑，未留资时在末尾邀请留下联系方式",
-            "nodes": nodes, "edges": edges, "chatConfig": chat_config}
+            "nodes": nodes, "edges": edges, "chatConfig": chat_config})
 
 
 def env_password():
@@ -194,14 +177,10 @@ def install_draft(flow, base, model, smoke_test=False):
         raise RuntimeError("FastGPT draft did not retain merchant context variables")
     models = [item.get("value") for node in detail["nodes"]
               for item in node.get("inputs", []) if item.get("key") in ("model", "modelId")]
-    if len(models) != 5 or any(not value for value in models):
+    if len(models) != 3 or any(not value for value in models):
         raise RuntimeError(f"FastGPT draft has missing model references: {models}")
     if any(value != match["modelId"] for value in models):
         raise RuntimeError("FastGPT draft did not retain the selected model ID")
-    stop_input = next(item for node in detail["nodes"] if node["nodeId"] == "stop_reply"
-                      for item in node.get("inputs", []) if item.get("key") == "text")
-    if not stop_input.get("value"):
-        raise RuntimeError("FastGPT draft lost the stop reply text")
     lead_received_prompt = next(item.get("value", "") for node in detail["nodes"]
                                 if node["nodeId"] == "lead_received_reply"
                                 for item in node.get("inputs", []) if item.get("key") == "systemPrompt")
