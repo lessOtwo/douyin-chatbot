@@ -97,7 +97,7 @@ const MAX_REPLY_CHARS: usize = 80;
 const MIN_WECHAT_CHARS: usize = 6;
 const PHONE_CONTACT_REPLY: &str = "好的，稍后工作人员会给您致电沟通";
 const WECHAT_CONTACT_REPLY: &str = "好的，稍后加您沟通，留意通过下";
-const SHORT_CONTACT_REPLY: &str = "麻烦您确认下您发的联系方式是否有问题";
+const SHORT_CONTACT_REPLY: &str = "麻烦您确认一下您发的联系方式是否正确";
 const LEGACY_CONTACT_REPLY: &str = "收到，稍后店长联系您详聊。";
 
 fn is_contact_reply(reply: &Value) -> bool {
@@ -130,6 +130,12 @@ fn bare_contact<'a>(text: &'a str, last_asked: bool) -> Option<(&'static str, &'
     let mobile = bytes.len() == 11 && bytes[0] == b'1' && (b'3'..=b'9').contains(&bytes[1])
         && bytes.iter().all(u8::is_ascii_digit);
     Some((if mobile { "phone" } else { "wechat" }, value))
+}
+
+fn short_contact_candidate(text: &str, last_asked: bool) -> bool {
+    let value = text.trim();
+    last_asked && !value.is_empty() && value.chars().count() < MIN_WECHAT_CHARS
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 fn contact_confirmation(fields: &Value, text: &str) -> Option<&'static str> {
@@ -225,7 +231,7 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
 #[cfg(test)]
 mod contact_policy_tests {
     use super::{bare_contact, clear_contact_promise, compose_model_reply, contact_confirmation,
-        shorten_reply, PHONE_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
+        short_contact_candidate, shorten_reply, PHONE_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
     use serde_json::json;
 
     #[test]
@@ -292,6 +298,10 @@ mod contact_policy_tests {
             assert_eq!(bare_contact(text, true), None, "{text}");
         }
         assert_eq!(bare_contact("ltltlt11", false), None);
+        assert!(short_contact_candidate("IINA9", true));
+        assert!(!short_contact_candidate("IINA9", false));
+        assert!(!short_contact_candidate("abc123", true));
+        assert!(!short_contact_candidate("微信号abc12", true));
     }
 
     #[test]
@@ -1300,12 +1310,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
             json!({"reply":WECHAT_CONTACT_REPLY,"contact_request":"",
                 "action":"reply","fields":{"wechat":value,"contact_method":"wechat"}})
         };
-    } else if last_contact_request && job.text.trim().chars().count() < MIN_WECHAT_CHARS
-        && !job.text.trim().is_empty()
-        && job.text.trim().bytes().all(|byte| byte.is_ascii_alphanumeric())
-        && (decision["fields"]["phone"].is_string()
-            || decision["fields"]["wechat"].is_string()
-            || is_contact_reply(&decision["reply"])) {
+    } else if short_contact_candidate(&job.text, last_contact_request) {
         decision = json!({"reply":SHORT_CONTACT_REPLY,
             "contact_request":"","action":"reply","fields":{}});
     }

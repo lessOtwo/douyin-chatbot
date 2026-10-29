@@ -100,9 +100,9 @@ def build(model):
         ai("contact_reply", "商家联系方式答疑", 1510, 390,
            "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。reply 不出现电话、微信二词；如 contact_request_allowed=true，另写结合当前问题的 contact_request，不把它写入 reply。只输出约定 JSON。"),
         ai("retry_reply", "拒绝后继续答疑", 1510, 650,
-           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；如问能否做某事，先给明确结论和必要条件。不设置 contact_refused，不返回 stop。若 contact_request_allowed=true，另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
+           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；能做的项目直接回答具体需求，只有确定不能做才在开头说明；未经确认的预约时间只能说可帮忙申请或协调，不能承诺该时段有空位。不设置 contact_refused，不返回 stop。若 contact_request_allowed=true，另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
         ai("normal_reply", "商家项目答疑", 1510, 910,
-           "先根据已审核商家资料和项目分组回答当前问题；能不能、可不可以等问题先给结论，再说必要条件和本店能提供的帮助，不要只介绍服务而漏答客户的问题。只有 main、available 是本店可做项目；excluded 或未配置的项目如实说不在服务范围，可简述本店实际可做项目。客户仅打招呼或需求不明时，可只用已配置的 main、available 项目拼接选择问句，并设置 fields.project_selection_only=true，contact_request 为空；回答或澄清具体项目时不设置。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。其他答疑在 contact_request_allowed=true 时另写结合项目的 contact_request，变化表达和索要理由；不返回 stop。只输出约定 JSON。"),
+           "先根据已审核商家资料和项目分组回答当前问题；能做的项目直接回答具体需求，不用“某项目可做”作开头；只有 excluded 或未配置项目才在开头说明不能做。具体价格或预约档期未知时说可向门店确认或申请，不把指定时段说成已可预约。只有 main、available 是本店可做项目；不要漏答客户当前问题。客户仅打招呼或需求不明时，可只用已配置的 main、available 项目拼接选择问句，并设置 fields.project_selection_only=true，contact_request 为空；回答或澄清具体项目时不设置。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。其他答疑在 contact_request_allowed=true 时另写结合项目的 contact_request，变化表达和索要理由；不返回 stop。只输出约定 JSON。"),
     ]
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),

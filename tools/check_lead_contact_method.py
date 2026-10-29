@@ -33,7 +33,7 @@ class Model(BaseHTTPRequestHandler):
         if text == "我是安装木门的，电话13500000000":
             decision = {"reply": "不用呢 谢谢", "action": "peer", "fields": {"phone": "13500000000"}}
             fields = None
-        elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "OK", "详细介绍"):
+        elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "IINA9", "OK", "详细介绍"):
             decision = {"reply": "可以咨询成人学历提升。" + ("我们会按您的学历情况介绍可选学习路径。" * 5 if text == "详细介绍" else ""),
                         "contact_request": "留个联系方式，方便我们按您的情况介绍课程。",
                         "action": "reply", "fields": {}}
@@ -192,9 +192,15 @@ def main():
                     wait_for_event_reply(base, short_first["id"])
                     short = send(19, "short-wechat", "abc12")
                     short_reply = wait_for_event_reply(base, short["id"])
-                    assert short_reply[0]["text"] == "麻烦您确认下您发的联系方式是否有问题", short_reply
+                    assert short_reply[0]["text"] == "麻烦您确认一下您发的联系方式是否正确", short_reply
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
                                 if lead["conversation_id"] == short["conversation_id"]]
+                    five_first = send(23, "five-wechat", "专升本")
+                    wait_for_event_reply(base, five_first["id"])
+                    five = send(24, "five-wechat", "IINA9")
+                    assert wait_for_event_reply(base, five["id"])[0]["text"] == "麻烦您确认一下您发的联系方式是否正确"
+                    assert not [lead for lead in call(base, "/api/snapshot")["leads"]
+                                if lead["conversation_id"] == five["conversation_id"]]
                     ordinary_short = send(22, "short-wechat", "OK")
                     ordinary_reply = wait_for_event_reply(base, ordinary_short["id"])
                     assert "不足 6 位" not in ordinary_reply[0]["text"], ordinary_reply
@@ -202,7 +208,7 @@ def main():
                                 if lead["conversation_id"] == short["conversation_id"]]
                     explicit_short = send(20, "explicit-short", "微信号是abc12")
                     explicit_reply = wait_for_event_reply(base, explicit_short["id"])
-                    assert explicit_reply[0]["text"] == "麻烦您确认下您发的联系方式是否有问题", explicit_reply
+                    assert explicit_reply[0]["text"] == "麻烦您确认一下您发的联系方式是否正确", explicit_reply
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
                                 if lead["conversation_id"] == explicit_short["conversation_id"]]
                     explicit_six = send(21, "explicit-six", "微信号是abc123")
