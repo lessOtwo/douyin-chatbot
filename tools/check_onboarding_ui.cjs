@@ -73,10 +73,11 @@ const settings = Object.fromEntries(fs.readFileSync(path.join(root, '.env'), 'ut
       }
     }
     await page.route('http://127.0.0.1:8088/onboard?token=retry-ui-check', route => route.fulfill({ status: 200, contentType: 'text/html', body: fs.readFileSync(path.join(root, 'business-service/web/onboard.html'), 'utf8') }));
-    await page.route('http://127.0.0.1:8088/api/onboard/context?token=retry-ui-check', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ industries: [{ id: 'industry-1', name: '教育教培' }], projects: [{ id: 'project-1', industry_id: 'industry-1', name: '语言培训', question: '想学什么语言？' }], prefill: { review_reason: '请修改服务区域', contact_name: '测试联系人', contact_phone: '13800000000', profile: { industry_id: 'industry-1', fields: { '门店抖音号': '1615185357', '抖音昵称': '测试门店', '完整门店名称': '测试门店', '服务区域': '泰安市', '门店详细地址': '示例街道1号', '资料或服务': '提供课程表' }, projects: { main: [{ id: 'project-1', name: '语言培训' }], available: [], excluded: [] } } } }) }));
+    await page.route('http://127.0.0.1:8088/api/onboard/context?token=retry-ui-check', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ industries: [{ id: 'industry-1', name: '教育教培' }], projects: [{ id: 'project-1', industry_id: 'industry-1', name: '语言培训', question: '想学什么语言？' }], prefill: { review_reason: '请修改服务区域', contact_name: '测试联系人', contact_phone: '13800000000', profile: { industry_id: 'industry-1', fields: { '门店抖音号': '1615185357', '抖音昵称': '测试门店', '完整门店名称': '测试门店', '服务区域': '泰安市', '门店详细地址': '示例街道1号', '资料或服务': '预约时间' }, projects: { main: [{ id: 'project-1', name: '语言培训' }], available: [], excluded: [] } } } }) }));
     await page.goto('http://127.0.0.1:8088/onboard?token=retry-ui-check');
     await page.waitForFunction(() => document.querySelector('#returnReason')?.textContent.includes('请修改服务区域'));
     if (await page.locator('#storeName').inputValue() !== '测试门店' || await page.locator('#address').inputValue() !== '示例街道1号' || !(await page.locator('input[data-project="project-1"][value="main"]').isChecked())) throw Error('returned form was not prefilled');
+    if (await page.locator('#materials').inputValue() !== '预约时间') throw Error('returned contact direction was not prefilled');
     const invalid = await page.goto('http://127.0.0.1:8088/onboard');
     if (invalid.status() !== 404) throw Error('invitation page is not token gated');
     if (errors.length) throw Error(errors.join('; '));

@@ -15,7 +15,7 @@
 <div><label for="address">门店详细地址</label><input id="address" maxlength="500"></div>
 <div><label for="storePhone">门店联系电话</label><input id="storePhone" maxlength="500"></div>
 </div><label style="display:flex;align-items:center;gap:8px"><input id="storePhonePublic" type="checkbox" style="width:auto">允许在客服回复中公开门店电话</label>
-<label for="materials">可提供的资料或服务 *</label><textarea id="materials" maxlength="500" required placeholder="例如发清单、预约门店沟通；请填写确实可提供的内容"></textarea>
+<label for="materials">资料或服务（后续沟通方向）*</label><select id="materials" required><option value="">请选择</option><option value="预约时间">预约时间</option><option value="折扣">折扣</option></select>
 <h2 style="margin-top:28px">入驻联系人</h2><div class="grid"><div><label for="contactName">联系人姓名 *</label><input id="contactName" maxlength="80" autocomplete="name" required></div><div><label for="contactPhone">联系人电话 *</label><input id="contactPhone" maxlength="30" autocomplete="tel" required></div></div>
 <div class="row" style="margin-top:22px"><button id="preview" type="button">预览并检查</button><button id="submit" type="button" disabled>确认提交审核</button></div><div id="status" role="status"></div><div id="result"></div>
 </section></main><script>

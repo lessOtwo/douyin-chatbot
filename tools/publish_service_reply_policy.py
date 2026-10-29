@@ -1,4 +1,4 @@
-"""Publish only the service and appointment reply wording in the existing workflow."""
+"""Publish the merchant-selected contact direction in the existing workflow."""
 import argparse
 import copy
 import hashlib
@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '6fb3a84'
+BASELINE = '1075b1b'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
@@ -85,8 +85,8 @@ def main():
     if len(before_parts) != len(after_parts):
         raise RuntimeError('System prompt paragraph structure changed')
     changes = [(old, new) for old, new in zip(before_parts, after_parts) if old != new]
-    if len(changes) != 3:
-        raise RuntimeError(f'Expected three prompt paragraphs, got {len(changes)}')
+    if len(changes) != 1:
+        raise RuntimeError(f'Expected one prompt paragraph, got {len(changes)}')
 
     target = copy.deepcopy(published)
     live_prompts = node_inputs(target)
@@ -124,7 +124,7 @@ def main():
                                  indent=2) + '\n', encoding='utf-8')
     payload = {key: target[key] for key in ('nodes', 'edges', 'chatConfig')}
     request('/api/core/app/version/publish?' + query, {
-        **payload, 'isPublish': True, 'versionName': '预约档期与项目答复一致性'})
+        **payload, 'isPublish': True, 'versionName': '商家沟通方向选择'})
     new_version = request('/api/core/app/detail?' + query).get('publishedVersionId')
     if not new_version or new_version == version:
         raise RuntimeError('Published version did not change')

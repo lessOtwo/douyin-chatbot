@@ -73,7 +73,7 @@ def form(token,industry,project,store="演示装修门店"):
             "service_area":"青岛市",
             "business_hours":"9:00-18:00","address":"青岛市市南区示例路1号",
             "store_phone":"0532-12345678","store_phone_public":False,
-            "materials_or_services":"门店提供装修资料并预约电话沟通"},
+            "materials_or_services":"预约时间"},
         "contact_name":"张先生","contact_phone":"13800000000"}
 
 def main():
@@ -82,6 +82,9 @@ def main():
     assert 'id="douyinNickname"' in html and 'pattern="[0-9]+"' in html
     assert 'id="warranty"' not in html and 'id="duration"' not in html
     assert '请包含完整门店名称' not in html
+    assert '<select id="materials" required>' in html
+    assert '<option value="预约时间">预约时间</option>' in html
+    assert '<option value="折扣">折扣</option>' in html
     assert "['excluded','不做']" not in html
     assert "excluded_project_ids" not in html
     assert "name=\"project-" in html and "type=\"radio\"" in html
@@ -146,12 +149,17 @@ def main():
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 bad={**valid,"fields":{**valid["fields"],"douyin_nickname":""}}
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
+                bad={**valid,"fields":{**valid["fields"],"materials_or_services":"提供课程表"}}
+                expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 bad={**valid,"main_project_ids":[other_project]}
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 bad={**valid,"available_project_ids":[project]}
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 preview=call(base,"/api/onboard/preview",valid)
                 assert preview["valid"] and preview["profile"]["projects"]["main"][0]["question"]
+                assert preview["profile"]["fields"]["资料或服务"]=="预约时间"
+                discount={**valid,"fields":{**valid["fields"],"materials_or_services":"折扣"}}
+                assert call(base,"/api/onboard/preview",discount)["profile"]["fields"]["资料或服务"]=="折扣"
                 assert [p["id"] for p in preview["profile"]["projects"]["available"]]==[available_project]
                 assert [p["id"] for p in preview["profile"]["projects"]["excluded"]]==[omitted_project]
                 legacy={**valid,"excluded_project_ids":[project]}

@@ -17,14 +17,14 @@ if not key:
 
 SERVICE = {
     'fields': {'所属行业': '汽车服务', '完整门店名称': '测试汽车服务门店',
-               '服务区域': '泰安市', '资料或服务': '汽车精洗、日常保养与预约咨询'},
+               '服务区域': '泰安市', '资料或服务': '预约时间'},
     'projects': {'main': [{'name': '美容护理', 'question': '您想做哪类美容护理？'}],
                  'available': [{'name': '日常保养', 'question': '您需要做哪些保养项目？'}],
                  'excluded': []},
 }
 PRODUCT = {
     'fields': {'所属行业': '汽车用品', '完整门店名称': '测试汽车用品门店',
-               '服务区域': '泰安市', '资料或服务': '车载脚垫销售，可咨询车型和款式'},
+               '服务区域': '泰安市', '资料或服务': '折扣'},
     'projects': {'main': [{'name': '车载脚垫', 'question': '您需要哪种车型的脚垫？'}],
                  'available': [{'name': '车载香水', 'question': '您喜欢哪种香型？'}],
                  'excluded': []},
@@ -81,6 +81,14 @@ service_contact = ask(service_id, SERVICE, '周六下午2点')
 contact(service_contact)
 assert re.search('等|等待', service_contact['contact_request']), service_contact
 assert re.search('周六|2点|两点', service_contact['reply'] + service_contact['contact_request']), service_contact
+service_followup = ask(service_id, SERVICE, '那精洗大概多少钱？', True)
+contact(service_followup)
+assert re.search('价|费用', service_followup['reply']), service_followup
+
+already_clear = ask('already-clear-' + uuid.uuid4().hex, SERVICE,
+                    'SUV精洗，想周六下午2点到店')
+contact(already_clear)
+assert re.search('等|等待', already_clear['contact_request']), already_clear
 
 product_id = 'product-' + uuid.uuid4().hex
 product_category = ask(product_id, PRODUCT, '想买车载脚垫')
@@ -95,6 +103,7 @@ assert '价格' in product_contact['reply'] + product_contact['contact_request']
 assert re.search('折扣|优惠', product_contact['reply'] + product_contact['contact_request']), product_contact
 
 print(json.dumps({'result': 'passed', 'greeting': greeting,
-                  'service': [service_category, service_time, service_contact],
+                  'service': [service_category, service_time, service_contact, service_followup],
+                  'already_clear': already_clear,
                   'product': [product_category, product_quantity, product_contact]},
                  ensure_ascii=False))

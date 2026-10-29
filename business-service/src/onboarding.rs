@@ -155,6 +155,9 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
     if fields.store_phone_public && fields.store_phone.trim().is_empty() {
         problems.push("公开门店电话前请填写门店联系电话".into());
     }
+    if !["预约时间", "折扣"].contains(&fields.materials_or_services.trim()) {
+        problems.push("资料或服务只能选择预约时间或折扣".into());
+    }
     if input.main_project_ids.is_empty() { problems.push("至少选择一项主做项目".into()); }
 
     let industry: Option<String> = db.query_row(
