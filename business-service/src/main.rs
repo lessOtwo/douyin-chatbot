@@ -95,6 +95,8 @@ mod staff_title_tests {
 
 const MAX_REPLY_CHARS: usize = 80;
 const MIN_WECHAT_CHARS: usize = 6;
+const PHONE_CONTACT_REPLY: &str = "好的，稍后工作人员会给您致电沟通";
+const WECHAT_CONTACT_REPLY: &str = "好的，稍后加您沟通，留意通过下";
 
 fn shorten_reply(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit { return text.to_owned(); }
@@ -121,6 +123,21 @@ fn bare_contact<'a>(text: &'a str, last_asked: bool) -> Option<(&'static str, &'
     let mobile = bytes.len() == 11 && bytes[0] == b'1' && (b'3'..=b'9').contains(&bytes[1])
         && bytes.iter().all(u8::is_ascii_digit);
     Some((if mobile { "phone" } else { "wechat" }, value))
+}
+
+fn contact_confirmation(fields: &Value, text: &str) -> Option<&'static str> {
+    let phone = fields["phone"].as_str().is_some_and(|value|
+        (5..=64).contains(&value.len()) && text.contains(value));
+    let wechat = fields["wechat"].as_str().is_some_and(|value|
+        value.chars().count() >= MIN_WECHAT_CHARS && value.len() <= 64 && text.contains(value));
+    match fields["contact_method"].as_str() {
+        Some("none") => None,
+        Some("phone") => phone.then_some(PHONE_CONTACT_REPLY),
+        Some("wechat") => (wechat || phone).then_some(WECHAT_CONTACT_REPLY),
+        _ if phone => Some(PHONE_CONTACT_REPLY),
+        _ if wechat => Some(WECHAT_CONTACT_REPLY),
+        _ => None,
+    }
 }
 
 fn last_contact_request(db: &Connection, conversation: &str) -> Result<bool> {
@@ -200,7 +217,9 @@ fn compose_model_reply(reply: &str, contact_request: &str, ask: bool) -> String 
 
 #[cfg(test)]
 mod contact_policy_tests {
-    use super::{bare_contact, clear_contact_promise, compose_model_reply, shorten_reply, MAX_REPLY_CHARS};
+    use super::{bare_contact, clear_contact_promise, compose_model_reply, contact_confirmation,
+        shorten_reply, PHONE_CONTACT_REPLY, WECHAT_CONTACT_REPLY, MAX_REPLY_CHARS};
+    use serde_json::json;
 
     #[test]
     fn clear_promise_requires_previous_request_and_excludes_other_material() {
@@ -266,6 +285,20 @@ mod contact_policy_tests {
             assert_eq!(bare_contact(text, true), None, "{text}");
         }
         assert_eq!(bare_contact("ltltlt11", false), None);
+    }
+
+    #[test]
+    fn confirmation_uses_selected_contact_channel() {
+        assert_eq!(contact_confirmation(&json!({"phone":"13700000000","contact_method":"phone"}),
+            "手机号13700000000，给我打电话"), Some(PHONE_CONTACT_REPLY));
+        assert_eq!(contact_confirmation(&json!({"wechat":"abc12345","contact_method":"wechat"}),
+            "微信号是abc12345"), Some(WECHAT_CONTACT_REPLY));
+        assert_eq!(contact_confirmation(&json!({"phone":"13900000000","contact_method":"wechat"}),
+            "手机号13900000000，加我微信"), Some(WECHAT_CONTACT_REPLY));
+        assert_eq!(contact_confirmation(&json!({"phone":"13700000000","wechat":"abc12345"}),
+            "13700000000 abc12345"), Some(PHONE_CONTACT_REPLY));
+        assert_eq!(contact_confirmation(&json!({"wechat":"abc12","contact_method":"wechat"}),
+            "微信号是abc12"), None);
     }
 }
 
@@ -1246,10 +1279,10 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
     })?;
     if let Some((kind, value)) = bare_contact {
         decision = if kind == "phone" {
-            json!({"reply":"收到，稍后店长联系您详聊。","contact_request":"",
+            json!({"reply":PHONE_CONTACT_REPLY,"contact_request":"",
                 "action":"reply","fields":{"phone":value,"contact_method":"phone"}})
         } else {
-            json!({"reply":"收到，稍后店长联系您详聊。","contact_request":"",
+            json!({"reply":WECHAT_CONTACT_REPLY,"contact_request":"",
                 "action":"reply","fields":{"wechat":value,"contact_method":"wechat"}})
         };
     } else if last_contact_request && job.text.trim().chars().count() < MIN_WECHAT_CHARS
@@ -1393,13 +1426,8 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             let has_contact: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM leads WHERE conversation_id=?1)",
                 [&job.conversation], |row| row.get(0))?;
-            let new_contact = decision["fields"]["contact_method"] != "none"
-                && ["phone", "wechat"].iter().any(|key| {
-                    decision["fields"][key].as_str().is_some_and(|value|
-                        (if *key == "wechat" { value.chars().count() >= MIN_WECHAT_CHARS }
-                            else { value.len() >= 5 })
-                            && job.text.contains(value))
-                });
+            let confirmation = contact_confirmation(&decision["fields"], &job.text);
+            let new_contact = confirmation.is_some();
             let promised_now = decision["fields"]["contact_promised"] == true
                 || clear_contact_promise(&job.text, last_asked);
             let project_selection_only = decision["fields"]["project_selection_only"] == true;
@@ -1407,7 +1435,7 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             let text = if decision["action"] == "peer" {
                 model_reply
             } else if new_contact && !has_contact {
-                "收到，稍后店长联系您详聊。".to_string()
+                confirmation.unwrap().to_string()
             } else {
                 compose_model_reply(&model_reply, model_contact_request,
                     !has_contact && !new_contact && !contact_promised && !promised_now

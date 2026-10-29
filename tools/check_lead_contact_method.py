@@ -133,10 +133,13 @@ def main():
 
                     direct = send(1, "phone", "手机号13700000000，给我打电话")
                     wait_for(base, direct["conversation_id"], [("phone", "13700000000")])
+                    assert wait_for_event_reply(base, direct["id"])[0]["text"] == "好的，稍后工作人员会给您致电沟通"
                     wechat = send(2, "wechat", "手机号13900000000，加我微信不要打电话")
                     wait_for(base, wechat["conversation_id"], [("wechat", "13900000000")])
+                    assert wait_for_event_reply(base, wechat["id"])[0]["text"] == "好的，稍后加您沟通，留意通过下"
                     explicit = send(3, "explicit", "微信号是abc12345")
                     wait_for(base, explicit["conversation_id"], [("wechat", "abc12345")])
+                    assert wait_for_event_reply(base, explicit["id"])[0]["text"] == "好的，稍后加您沟通，留意通过下"
                     changed = send(4, "changed", "手机号13700000000，给我打电话")
                     before = wait_for(base, changed["conversation_id"], [("phone", "13700000000")])[0]
                     send(5, "changed", "别打电话，加我微信")
@@ -177,12 +180,12 @@ def main():
                     bare = send(11, "bare-wechat", "ltltlt11")
                     wait_for(base, bare["conversation_id"], [("wechat", "ltltlt11")])
                     acknowledged = wait_for_event_reply(base, bare["id"])
-                    assert len(acknowledged) == 1 and acknowledged[0]["text"] == "收到，稍后店长联系您详聊。", acknowledged
+                    assert len(acknowledged) == 1 and acknowledged[0]["text"] == "好的，稍后加您沟通，留意通过下", acknowledged
                     six_first = send(16, "six-wechat", "专升本")
                     wait_for_event_reply(base, six_first["id"])
                     six = send(17, "six-wechat", "abc123")
                     wait_for(base, six["conversation_id"], [("wechat", "abc123")])
-                    wait_for_event_reply(base, six["id"])
+                    assert wait_for_event_reply(base, six["id"])[0]["text"] == "好的，稍后加您沟通，留意通过下"
                     short_first = send(18, "short-wechat", "专升本")
                     wait_for_event_reply(base, short_first["id"])
                     short = send(19, "short-wechat", "abc12")
@@ -207,7 +210,7 @@ def main():
                     wait_for_event_reply(base, phone_first["id"])
                     bare_phone = send(15, "bare-phone", "13545678901")
                     wait_for(base, bare_phone["conversation_id"], [("phone", "13545678901")])
-                    wait_for_event_reply(base, bare_phone["id"])
+                    assert wait_for_event_reply(base, bare_phone["id"])[0]["text"] == "好的，稍后工作人员会给您致电沟通"
                     no_request = send(12, "no-prior-request", "abc123")
                     wait_for_event_reply(base, no_request["id"])
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
