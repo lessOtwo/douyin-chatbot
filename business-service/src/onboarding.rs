@@ -120,7 +120,6 @@ pub struct FormInput {
     industry_id: String,
     #[serde(default)] main_project_ids: Vec<String>,
     #[serde(default)] available_project_ids: Vec<String>,
-    #[serde(default)] excluded_project_ids: Vec<String>,
     fields: MerchantFields,
     contact_name: String,
     contact_phone: String,
@@ -167,8 +166,7 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
     let mut projects = serde_json::Map::new();
     for (kind, ids) in [
         ("main",&input.main_project_ids),
-        ("available",&input.available_project_ids),
-        ("excluded",&input.excluded_project_ids)
+        ("available",&input.available_project_ids)
     ] {
         let mut selected = Vec::new();
         for project_id in ids {
@@ -187,6 +185,20 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
         }
         projects.insert(kind.into(),json!(selected));
     }
+    let mut excluded = Vec::new();
+    let mut statement = db.prepare(
+        "SELECT id,published_name,published_question FROM industry_projects WHERE industry_id=?1 AND published_at IS NOT NULL ORDER BY rowid"
+    )?;
+    let rows = statement.query_map([&input.industry_id], |row| {
+        Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))
+    })?;
+    for row in rows {
+        let (project_id,name,question) = row?;
+        if !seen.contains(&project_id) {
+            excluded.push(json!({"id":project_id,"name":name,"question":question}));
+        }
+    }
+    projects.insert("excluded".into(),json!(excluded));
     if !problems.is_empty() {
         return Err(problem(StatusCode::UNPROCESSABLE_ENTITY,&problems.join("；")));
     }

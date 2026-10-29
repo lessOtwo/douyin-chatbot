@@ -68,7 +68,7 @@ def expect_http(code,fn):
 
 def form(token,industry,project,store="演示装修门店"):
     return {"token":token,"industry_id":industry,"main_project_ids":[project],
-        "available_project_ids":[],"excluded_project_ids":[],
+        "available_project_ids":[],
         "fields":{"douyin_account":"1615185357","douyin_nickname":"东营大美聊装修","store_name":store,
             "service_area":"青岛市",
             "business_hours":"9:00-18:00","address":"青岛市市南区示例路1号",
@@ -82,6 +82,9 @@ def main():
     assert 'id="douyinNickname"' in html and 'pattern="[0-9]+"' in html
     assert 'id="warranty"' not in html and 'id="duration"' not in html
     assert '请包含完整门店名称' not in html
+    assert "['excluded','不做']" not in html
+    assert "excluded_project_ids" not in html
+    assert "name=\"project-" in html and "type=\"radio\"" in html
     script=html.rsplit("<script>",1)[1].split("</script>",1)[0]
     subprocess.run(["node","--check","--input-type=commonjs"],input=script,text=True,check=True)
     base=f"http://127.0.0.1:{port()}"
@@ -117,7 +120,11 @@ def main():
                     "name":"老房翻新","question":"您想做局部改造还是整屋翻新？"},True)["id"]
                 other_project=call(base,"/api/catalog/projects",{"industry_id":other,
                     "name":"语言培训","question":"您想学哪种语言？"},True)["id"]
-                for item in (project,other_project):call(base,f"/api/catalog/projects/{item}/publish",{},True)
+                available_project=call(base,"/api/catalog/projects",{"industry_id":industry,
+                    "name":"家具维修","question":"您需要维修哪种家具？"},True)["id"]
+                omitted_project=call(base,"/api/catalog/projects",{"industry_id":industry,
+                    "name":"宠物托管","question":"您需要托管宠物吗？"},True)["id"]
+                for item in (project,other_project,available_project,omitted_project):call(base,f"/api/catalog/projects/{item}/publish",{},True)
                 invite=call(base,"/api/invitations",{},True)
                 assert invite["expires_hours"]==6
                 listed={item["id"]:item for item in call(base,"/api/invitations",auth=True)["items"]}
@@ -132,8 +139,9 @@ def main():
                 with urllib.request.urlopen(base+"/onboard?token="+token) as response:
                     assert response.status==200 and b"<html" in response.read(200)
                 context=call(base,"/api/onboard/context?token="+token)
-                assert len(context["industries"])==2 and len(context["projects"])==2
+                assert len(context["industries"])==2 and len(context["projects"])==4
                 valid=form(token,industry,project)
+                valid["available_project_ids"]=[available_project]
                 bad={**valid,"fields":{**valid["fields"],"douyin_account":"东营大美聊装修"}}
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 bad={**valid,"fields":{**valid["fields"],"douyin_nickname":""}}
@@ -144,11 +152,18 @@ def main():
                 expect_http(422,lambda:call(base,"/api/onboard/preview",bad))
                 preview=call(base,"/api/onboard/preview",valid)
                 assert preview["valid"] and preview["profile"]["projects"]["main"][0]["question"]
+                assert [p["id"] for p in preview["profile"]["projects"]["available"]]==[available_project]
+                assert [p["id"] for p in preview["profile"]["projects"]["excluded"]]==[omitted_project]
+                legacy={**valid,"excluded_project_ids":[project]}
+                assert [p["id"] for p in call(base,"/api/onboard/preview",legacy)["profile"]["projects"]["excluded"]]==[omitted_project]
                 assert preview["profile"]["fields"]["门店详细地址"]=="青岛市市南区示例路1号"
                 assert "质保售后" not in preview["profile"]["fields"]
                 assert "产品施工时长" not in preview["profile"]["fields"]
                 first=call(base,"/api/onboard/submit",valid)
                 assert first["version"]==1 and first["status"]=="pending"
+                with closing(sqlite3.connect(db_path)) as db:
+                    stored=json.loads(db.execute("SELECT profile_json FROM merchant_versions WHERE id=?",(first["version_id"],)).fetchone()[0])
+                    assert [p["id"] for p in stored["projects"]["excluded"]]==[omitted_project]
                 assert next(item for item in call(base,"/api/invitations",auth=True)["items"]
                             if item["id"]==invite["id"])["merchant_id"]==first["merchant_id"]
                 expect_http(404,lambda:call(base,"/api/onboard/submit",valid))
@@ -232,7 +247,7 @@ def main():
                 else:raise AssertionError("service failed to restart")
                 assert [item["id"] for item in call(base,"/api/accounts",auth=True)["accounts"]]==["1615185357"]
                 print(json.dumps({"result":"passed","checks":["token page gate and expiry",
-                    "cross-industry and duplicate project rejection","one-use invitation",
+                    "cross-industry and duplicate project rejection","unselected published project saved as excluded","one-use invitation",
                     "reviewed profile version preserved","used catalog deletion blocked",
                     "mandatory published workflow binding and restart persistence","numeric account and nickname validation",
                     "duplicate and changed account rejection","return reason, new invitation and prefill",
