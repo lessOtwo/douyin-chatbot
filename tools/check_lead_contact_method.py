@@ -190,7 +190,7 @@ def main():
                     wait_for_event_reply(base, short_first["id"])
                     short = send(19, "short-wechat", "abc12")
                     short_reply = wait_for_event_reply(base, short["id"])
-                    assert "留个联系方式" in short_reply[0]["text"] and "收到，稍后" not in short_reply[0]["text"], short_reply
+                    assert short_reply[0]["text"] == "麻烦您确认下您发的联系方式是否有问题", short_reply
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
                                 if lead["conversation_id"] == short["conversation_id"]]
                     ordinary_short = send(22, "short-wechat", "OK")
@@ -200,7 +200,7 @@ def main():
                                 if lead["conversation_id"] == short["conversation_id"]]
                     explicit_short = send(20, "explicit-short", "微信号是abc12")
                     explicit_reply = wait_for_event_reply(base, explicit_short["id"])
-                    assert "收到，稍后" not in explicit_reply[0]["text"], explicit_reply
+                    assert explicit_reply[0]["text"] == "麻烦您确认下您发的联系方式是否有问题", explicit_reply
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
                                 if lead["conversation_id"] == explicit_short["conversation_id"]]
                     explicit_six = send(21, "explicit-six", "微信号是abc123")

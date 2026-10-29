@@ -228,7 +228,7 @@ pub async fn submit(State(app): State<App>, Json(input): Json<FormInput>) -> Api
     let version_id = id();
     tx.execute("INSERT INTO merchant_versions(id,merchant_id,version,status,profile_json,contact_name,contact_phone) VALUES(?1,?2,?3,'pending',?4,?5,?6)",
         params![version_id,merchant_id,version,profile.to_string(),input.contact_name.trim(),input.contact_phone.trim()])?;
-    let used = tx.execute("UPDATE merchant_invitations SET status='used',used_at=unixepoch() WHERE id=?1 AND status='active' AND expires_at>unixepoch()",[&invite_id])?;
+    let used = tx.execute("UPDATE merchant_invitations SET status='used',used_at=unixepoch(),merchant_id=?2 WHERE id=?1 AND status='active' AND expires_at>unixepoch()",params![invite_id,merchant_id])?;
     if used != 1 { return Err(problem(StatusCode::CONFLICT,"邀请链接已使用")); }
     tx.commit()?;
     Ok(Json(json!({"merchant_id":merchant_id,"version_id":version_id,"version":version,"status":"pending"})))
@@ -243,6 +243,52 @@ pub async fn list_merchants(State(app): State<App>, headers: HeaderMap) -> ApiRe
         Ok(json!({"id":r.get::<_,String>(0)?,"merchant_id":r.get::<_,String>(1)?,"version":r.get::<_,i64>(2)?,"status":r.get::<_,String>(3)?,"profile":serde_json::from_str::<Value>(&profile).unwrap_or(Value::Null),"contact_name":r.get::<_,String>(5)?,"contact_phone":r.get::<_,String>(6)?,"submitted_at":r.get::<_,i64>(7)?,"reviewed_at":r.get::<_,Option<i64>>(8)?,"review_reason":r.get::<_,String>(9)?,"current":r.get::<_,Option<String>>(10)?==Some(r.get::<_,String>(0)?)}))
     })?.collect::<std::result::Result<Vec<_>,_>>()?;
     Ok(Json(json!({"items":items})))
+}
+
+pub async fn delete_merchant(State(app): State<App>, Path(merchant_id): Path<String>, headers: HeaderMap) -> ApiResult {
+    admin_auth(&app, &headers, true)?;
+    let mut db = app.db.lock().unwrap();
+    let tx = db.transaction()?;
+    let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM merchants WHERE id=?1)",
+        [&merchant_id], |row| row.get(0))?;
+    if !exists { return Err(problem(StatusCode::NOT_FOUND, "商家不存在")); }
+
+    let mut account_ids: Vec<String> = tx.prepare("SELECT id FROM merchant_accounts WHERE merchant_id=?1")?
+        .query_map([&merchant_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for account in app.accounts.values().filter(|account| account.merchant_id == merchant_id) {
+        if stored_account(&tx, &account.id)?.is_some_and(|stored| stored.merchant_id != merchant_id) {
+            continue;
+        }
+        if !account_ids.contains(&account.id) { account_ids.push(account.id.clone()); }
+    }
+    for account_id in &account_ids {
+        let busy: bool = tx.query_row("SELECT EXISTS(
+            SELECT 1 FROM events WHERE account_id=?1 AND status='processing'
+            UNION SELECT 1 FROM outbox o JOIN conversations c ON c.id=o.conversation_id
+            WHERE c.account_id=?1 AND o.status='sending')", [account_id], |row| row.get(0))?;
+        if busy { return Err(problem(StatusCode::CONFLICT, "该商家仍有正在处理或发送的消息，请稍后重试")); }
+    }
+
+    for account_id in &account_ids {
+        if app.accounts.get(account_id).is_some_and(|account| account.merchant_id == merchant_id) {
+            tx.execute("INSERT OR IGNORE INTO removed_accounts(id) VALUES(?1)", [account_id])?;
+        }
+        for table in ["lead_history_links", "unanswered_questions", "leads", "outbox"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE conversation_id IN (
+                SELECT id FROM conversations WHERE account_id=?1)"), [account_id])?;
+        }
+        tx.execute("DELETE FROM decisions WHERE event_id IN (
+            SELECT id FROM events WHERE account_id=?1)", [account_id])?;
+        tx.execute("DELETE FROM events WHERE account_id=?1", [account_id])?;
+        tx.execute("DELETE FROM conversations WHERE account_id=?1", [account_id])?;
+    }
+    tx.execute("DELETE FROM merchant_invitations WHERE merchant_id=?1", [&merchant_id])?;
+    tx.execute("DELETE FROM merchant_versions WHERE merchant_id=?1", [&merchant_id])?;
+    tx.execute("DELETE FROM merchant_accounts WHERE merchant_id=?1", [&merchant_id])?;
+    tx.execute("DELETE FROM merchants WHERE id=?1", [&merchant_id])?;
+    tx.commit()?;
+    Ok(Json(json!({"deleted":true,"merchant_id":merchant_id})))
 }
 
 #[derive(Deserialize)]

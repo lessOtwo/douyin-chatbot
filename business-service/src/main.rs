@@ -97,6 +97,7 @@ const MAX_REPLY_CHARS: usize = 80;
 const MIN_WECHAT_CHARS: usize = 6;
 const PHONE_CONTACT_REPLY: &str = "好的，稍后工作人员会给您致电沟通";
 const WECHAT_CONTACT_REPLY: &str = "好的，稍后加您沟通，留意通过下";
+const SHORT_CONTACT_REPLY: &str = "麻烦您确认下您发的联系方式是否有问题";
 
 fn shorten_reply(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit { return text.to_owned(); }
@@ -672,6 +673,7 @@ async fn main() -> Result<()> {
         .route("/api/invitations/{id}/revoke", post(onboarding::revoke))
         .route("/api/invitations/{id}", delete(onboarding::delete_revoked))
         .route("/api/merchants", get(onboarding::list_merchants))
+        .route("/api/merchants/{id}", delete(onboarding::delete_merchant))
         .route("/api/merchants/{id}/bot-control", post(merchant_bot_control))
         .route(
             "/api/merchant-versions/{id}/review",
@@ -773,6 +775,13 @@ async fn receive(
     }
     let mut db = app.db.lock().unwrap();
     let tx = db.transaction().map_err(anyhow::Error::from)?;
+    let removed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM removed_accounts WHERE id=?1)",
+        [&account_id], |row| row.get(0),
+    )?;
+    if removed || (stored_account(&tx, &account_id)?.is_none() && !app.accounts.contains_key(&account_id)) {
+        return Err(problem(StatusCode::NOT_FOUND, "unknown account"));
+    }
     let existing: Option<(String,String,String,String,String,Option<String>)> = tx.query_row(
         "SELECT e.id,e.status,e.text,c.external_id,c.customer_id,e.image_sha256 FROM events e JOIN conversations c ON c.id=e.conversation_id WHERE e.account_id=?1 AND (e.event_id=?2 OR e.message_id=?3)",
         params![account_id,input.event_id,input.message_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))
@@ -1291,8 +1300,8 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         && (decision["fields"]["phone"].is_string()
             || decision["fields"]["wechat"].is_string()
             || decision["reply"] == "收到，稍后店长联系您详聊。") {
-        decision = json!({"reply":"这串内容还不足 6 位。",
-            "contact_request":"方便留个联系方式再确认一下吗？","action":"reply","fields":{}});
+        decision = json!({"reply":SHORT_CONTACT_REPLY,
+            "contact_request":"","action":"reply","fields":{}});
     }
     // Older workflows may still request handoff. There are no live agents;
     // record a review item and acknowledge the limit without inventing a queue.
@@ -1336,8 +1345,8 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
             if !fields.contains_key("phone") && !fields.contains_key("contact_value") {
                 fields.remove("contact_method");
                 if decision["reply"] == "收到，稍后店长联系您详聊。" {
-                    decision["reply"] = json!("这串内容还不足 6 位。");
-                    decision["contact_request"] = json!("方便留个联系方式再确认一下吗？");
+                    decision["reply"] = json!(SHORT_CONTACT_REPLY);
+                    decision["contact_request"] = json!("");
                 }
             }
         }
@@ -1436,6 +1445,8 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
                 model_reply
             } else if new_contact && !has_contact {
                 confirmation.unwrap().to_string()
+            } else if model_reply == SHORT_CONTACT_REPLY {
+                SHORT_CONTACT_REPLY.to_string()
             } else {
                 compose_model_reply(&model_reply, model_contact_request,
                     !has_contact && !new_contact && !contact_promised && !promised_now

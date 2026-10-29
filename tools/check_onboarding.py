@@ -149,6 +149,8 @@ def main():
                 assert "产品施工时长" not in preview["profile"]["fields"]
                 first=call(base,"/api/onboard/submit",valid)
                 assert first["version"]==1 and first["status"]=="pending"
+                assert next(item for item in call(base,"/api/invitations",auth=True)["items"]
+                            if item["id"]==invite["id"])["merchant_id"]==first["merchant_id"]
                 expect_http(404,lambda:call(base,"/api/onboard/submit",valid))
                 expect_http(404,lambda:call(base,"/api/onboard/context?token="+token))
                 workflows=call(base,"/api/fastgpt/workflows",auth=True)
