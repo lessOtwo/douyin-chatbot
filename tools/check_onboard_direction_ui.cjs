@@ -1,4 +1,4 @@
-// Focused browser check for the merchant's single-choice contact direction.
+// Focused browser check for the merchant's single-choice script category.
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('C:/Users/simai/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
@@ -22,14 +22,16 @@ const html = fs.readFileSync(path.join(__dirname, '../business-service/web/onboa
             projects: { main: [{ id: 'care', name: '日常保养' }], available: [], excluded: [] } } }
       }) }));
     await page.goto('http://127.0.0.1:8088/onboard?token=direction-ui-check');
-    await page.waitForFunction(() => document.querySelector('#materials')?.value === '预约时间');
-    const options = await page.locator('#materials option').evaluateAll(items =>
+    await page.waitForFunction(() => document.querySelector('#scriptCategory')?.value === '到店/上门服务型');
+    const options = await page.locator('#scriptCategory option').evaluateAll(items =>
       items.map(item => item.value).filter(Boolean));
-    if (JSON.stringify(options) !== JSON.stringify(['预约时间', '折扣']))
-      throw Error('contact direction must have exactly two selectable values');
-    await page.locator('#materials').selectOption('折扣');
-    const value = await page.evaluate(() => payload().fields.materials_or_services);
-    if (value !== '折扣') throw Error('selected contact direction was not submitted');
+    if (JSON.stringify(options) !== JSON.stringify(['到店/上门服务型', '工厂批发型', '零售型']))
+      throw Error('script category must have exactly three selectable values');
+    for (const category of options) {
+      await page.locator('#scriptCategory').selectOption(category);
+      const value = await page.evaluate(() => payload().fields.script_category);
+      if (value !== category) throw Error('selected script category was not submitted');
+    }
     console.log(JSON.stringify({ result: 'passed', checks: ['prefill', 'single choice', 'payload'] }));
   } finally {
     await browser.close();

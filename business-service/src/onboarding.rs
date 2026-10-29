@@ -111,7 +111,7 @@ pub struct MerchantFields {
     #[serde(default)] address: String,
     #[serde(default)] store_phone: String,
     #[serde(default)] store_phone_public: bool,
-    materials_or_services: String,
+    script_category: String,
 }
 
 #[derive(Deserialize)]
@@ -136,7 +136,7 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
         ("门店营业时间",&fields.business_hours,false),
         ("门店详细地址",&fields.address,false),
         ("门店联系电话",&fields.store_phone,false),
-        ("资料或服务",&fields.materials_or_services,true),
+        ("话术类别",&fields.script_category,true),
         ("入驻联系人姓名",&input.contact_name,true),
         ("入驻联系人电话",&input.contact_phone,true),
     ] {
@@ -155,8 +155,8 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
     if fields.store_phone_public && fields.store_phone.trim().is_empty() {
         problems.push("公开门店电话前请填写门店联系电话".into());
     }
-    if !["预约时间", "折扣"].contains(&fields.materials_or_services.trim()) {
-        problems.push("资料或服务只能选择预约时间或折扣".into());
+    if !["到店/上门服务型", "工厂批发型", "零售型"].contains(&fields.script_category.trim()) {
+        problems.push("话术类别只能选择到店/上门服务型、工厂批发型或零售型".into());
     }
     if input.main_project_ids.is_empty() { problems.push("至少选择一项主做项目".into()); }
 
@@ -215,7 +215,7 @@ fn validate_profile(db: &Connection, input: &FormInput) -> std::result::Result<V
         "门店详细地址":fields.address.trim(),
         "门店联系电话":fields.store_phone.trim(),
         "门店电话可公开":if fields.store_phone_public {"是"} else {"否"},
-        "资料或服务":fields.materials_or_services.trim()
+        "话术类别":fields.script_category.trim()
     });
     Ok(json!({"fields":fields,"industry_id":input.industry_id,"projects":projects}))
 }

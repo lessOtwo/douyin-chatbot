@@ -17,17 +17,22 @@ if not key:
 
 SERVICE = {
     'fields': {'所属行业': '汽车服务', '完整门店名称': '测试汽车服务门店',
-               '服务区域': '泰安市', '资料或服务': '预约时间'},
+               '服务区域': '泰安市', '话术类别': '到店/上门服务型'},
     'projects': {'main': [{'name': '美容护理', 'question': '您想做哪类美容护理？'}],
                  'available': [{'name': '日常保养', 'question': '您需要做哪些保养项目？'}],
                  'excluded': []},
 }
-PRODUCT = {
+WHOLESALE = {
     'fields': {'所属行业': '汽车用品', '完整门店名称': '测试汽车用品门店',
-               '服务区域': '泰安市', '资料或服务': '折扣'},
+               '服务区域': '泰安市', '话术类别': '工厂批发型'},
     'projects': {'main': [{'name': '车载脚垫', 'question': '您需要哪种车型的脚垫？'}],
                  'available': [{'name': '车载香水', 'question': '您喜欢哪种香型？'}],
                  'excluded': []},
+}
+RETAIL = {
+    'fields': {'所属行业': '汽车用品', '完整门店名称': '测试零售门店',
+               '服务区域': '泰安市', '话术类别': '零售型'},
+    'projects': WHOLESALE['projects'],
 }
 
 
@@ -79,7 +84,8 @@ question(service_time)
 assert re.search('时间|什么时候|哪天|预约', service_time['reply']), service_time
 service_contact = ask(service_id, SERVICE, '周六下午2点')
 contact(service_contact)
-assert re.search('等|等待', service_contact['contact_request']), service_contact
+assert re.search('预约|档期|时间', service_contact['contact_request']), service_contact
+assert re.search('门店|工作人员', service_contact['contact_request']), service_contact
 assert re.search('周六|2点|两点', service_contact['reply'] + service_contact['contact_request']), service_contact
 service_followup = ask(service_id, SERVICE, '那精洗大概多少钱？', True)
 contact(service_followup)
@@ -88,22 +94,31 @@ assert re.search('价|费用', service_followup['reply']), service_followup
 already_clear = ask('already-clear-' + uuid.uuid4().hex, SERVICE,
                     'SUV精洗，想周六下午2点到店')
 contact(already_clear)
-assert re.search('等|等待', already_clear['contact_request']), already_clear
+assert re.search('预约|档期|时间', already_clear['contact_request']), already_clear
 
-product_id = 'product-' + uuid.uuid4().hex
-product_category = ask(product_id, PRODUCT, '想买车载脚垫')
-question(product_category)
-assert re.search('车型|轿车|SUV|款式|全包围', product_category['reply']), product_category
-product_quantity = ask(product_id, PRODUCT, 'SUV，想要全包围的')
-question(product_quantity)
-assert re.search('几套|多少|数量', product_quantity['reply']), product_quantity
-product_contact = ask(product_id, PRODUCT, '两套')
-contact(product_contact)
-assert '价格' in product_contact['reply'] + product_contact['contact_request'], product_contact
-assert re.search('折扣|优惠', product_contact['reply'] + product_contact['contact_request']), product_contact
+wholesale_id = 'wholesale-' + uuid.uuid4().hex
+wholesale_quantity = ask(wholesale_id, WHOLESALE, '想批发车载脚垫')
+question(wholesale_quantity)
+assert re.search('几|多少|数量|起订', wholesale_quantity['reply']), wholesale_quantity
+wholesale_contact = ask(wholesale_id, WHOLESALE, '两百套')
+contact(wholesale_contact)
+assert re.search('折扣|优惠', wholesale_contact['reply'] + wholesale_contact['contact_request']), wholesale_contact
+assert re.search('门店|工作人员', wholesale_contact['contact_request']), wholesale_contact
+
+retail_id = 'retail-' + uuid.uuid4().hex
+retail_model = ask(retail_id, RETAIL, '想买车载脚垫')
+question(retail_model)
+assert re.search('车型|轿车|SUV|款式|档次|型号', retail_model['reply']), retail_model
+retail_contact = ask(retail_id, RETAIL, 'SUV，全包围的')
+contact(retail_contact)
+assert re.search('全包围|贴合|覆盖|防护|清洁|材质|差异|特点|特性', retail_contact['reply']), retail_contact
+assert re.search('型号|款式|档次|差异|特点|特性', retail_contact['contact_request']), retail_contact
+assert re.search('门店|工作人员', retail_contact['contact_request']), retail_contact
+assert not re.search('几套|多少套|数量', retail_contact['reply'] + retail_contact['contact_request']), retail_contact
 
 print(json.dumps({'result': 'passed', 'greeting': greeting,
                   'service': [service_category, service_time, service_contact, service_followup],
                   'already_clear': already_clear,
-                  'product': [product_category, product_quantity, product_contact]},
+                  'wholesale': [wholesale_quantity, wholesale_contact],
+                  'retail': [retail_model, retail_contact]},
                  ensure_ascii=False))
