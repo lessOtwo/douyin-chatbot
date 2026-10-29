@@ -1332,7 +1332,7 @@ async fn understand(app: &App, job: &Job) -> std::result::Result<Value, ApiError
         || decision["fields"]["contact_method"]
             .as_str()
             .is_some_and(|method| !["phone", "wechat", "none"].contains(&method))
-        || ["contact_promised", "project_selection_only"].iter().any(|key|
+        || ["contact_promised", "project_selection_only", "intake_question_only"].iter().any(|key|
             !decision["fields"][key].is_null() && !decision["fields"][key].is_boolean())
         || decision["contact_request"].as_str().is_some_and(|request| request.len() > 500)
         || (!decision["contact_request"].is_null() && !decision["contact_request"].is_string())
@@ -1451,6 +1451,7 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             let promised_now = decision["fields"]["contact_promised"] == true
                 || clear_contact_promise(&job.text, last_asked);
             let project_selection_only = decision["fields"]["project_selection_only"] == true;
+            let intake_question_only = decision["fields"]["intake_question_only"] == true;
             let model_contact_request = decision["contact_request"].as_str().unwrap_or("");
             let text = if decision["action"] == "peer" {
                 model_reply
@@ -1461,7 +1462,7 @@ async fn run_flow(app: &App, job: &Job) -> Result<()> {
             } else {
                 compose_model_reply(&model_reply, model_contact_request,
                     !has_contact && !new_contact && !contact_promised && !promised_now
-                        && !project_selection_only)
+                        && !project_selection_only && !intake_question_only)
             };
             if promised_now && decision["action"] != "peer" {
                 tx.execute("UPDATE conversations SET contact_promised=1 WHERE id=?1",

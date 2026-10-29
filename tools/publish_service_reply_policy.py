@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '71b7edb'
+BASELINE = '6fb3a84'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
@@ -85,8 +85,8 @@ def main():
     if len(before_parts) != len(after_parts):
         raise RuntimeError('System prompt paragraph structure changed')
     changes = [(old, new) for old, new in zip(before_parts, after_parts) if old != new]
-    if len(changes) != 1:
-        raise RuntimeError(f'Expected one prompt paragraph, got {len(changes)}')
+    if len(changes) != 3:
+        raise RuntimeError(f'Expected three prompt paragraphs, got {len(changes)}')
 
     target = copy.deepcopy(published)
     live_prompts = node_inputs(target)
@@ -95,8 +95,18 @@ def main():
     for node_id in AI_NODES:
         value = live_prompts[node_id]['value']
         for index, (old, new) in enumerate(changes, 1):
-            value = replace_once(value, old, new, f'{node_id} paragraph {index}')
-        if node_id in ('retry_reply', 'normal_reply'):
+            if index == 2 and old not in value:
+                value = replace_once(value,
+                    'fields 为对象，可包含 need_type、city、area、phone、wechat、contact_method、contact_value、contact_refused。',
+                    'fields 为对象，可包含 need_type、city、area、phone、wechat、contact_method、contact_value、project_selection_only、intake_question_only。',
+                    f'{node_id} legacy fields')
+                value = replace_once(value,
+                    '识别出配置项目时 need_type 必须是该项目的准确名称；仅当客户明确拒绝留资时 contact_refused=true，犹豫或含糊时不要设置。',
+                    '识别出配置项目时 need_type 必须是该项目的准确名称；客户拒绝留资时仍按当前阶段答疑，不设置 contact_refused。询问类别、预约时间或购买数量时 intake_question_only=true，contact_request 为空。',
+                    f'{node_id} legacy refusal rule')
+            else:
+                value = replace_once(value, old, new, f'{node_id} paragraph {index}')
+        if node_id in ('contact_reply', 'retry_reply', 'normal_reply'):
             old_extra = old_prompts[node_id]['value'].rsplit('\n', 1)[-1]
             new_extra = new_prompts[node_id]['value'].rsplit('\n', 1)[-1]
             if old_extra != new_extra:

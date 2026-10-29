@@ -33,6 +33,11 @@ class Model(BaseHTTPRequestHandler):
         if text == "我是安装木门的，电话13500000000":
             decision = {"reply": "不用呢 谢谢", "action": "peer", "fields": {"phone": "13500000000"}}
             fields = None
+        elif text == "精洗":
+            decision = {"reply": "您的车是轿车还是SUV？",
+                        "contact_request": "方便留个联系方式，确认精洗安排吗？",
+                        "action": "reply", "fields": {"intake_question_only": True}}
+            fields = None
         elif text in ("专升本", "ltltlt11", "13545678901", "abc123", "IINA9", "OK", "详细介绍"):
             decision = {"reply": "可以咨询成人学历提升。" + ("我们会按您的学历情况介绍可选学习路径。" * 5 if text == "详细介绍" else ""),
                         "contact_request": "留个联系方式，方便我们按您的情况介绍课程。",
@@ -201,6 +206,10 @@ def main():
                     assert wait_for_event_reply(base, five["id"])[0]["text"] == "麻烦您确认一下您发的联系方式是否正确"
                     assert not [lead for lead in call(base, "/api/snapshot")["leads"]
                                 if lead["conversation_id"] == five["conversation_id"]]
+                    intake = send(25, "intake-question", "精洗")
+                    intake_reply = wait_for_event_reply(base, intake["id"])
+                    assert "轿车还是SUV" in intake_reply[0]["text"]
+                    assert "留个联系方式" not in intake_reply[0]["text"]
                     ordinary_short = send(22, "short-wechat", "OK")
                     ordinary_reply = wait_for_event_reply(base, ordinary_short["id"])
                     assert "不足 6 位" not in ordinary_reply[0]["text"], ordinary_reply
@@ -236,6 +245,7 @@ def main():
                         "WeChat ID needs at least six characters in bare and explicit messages",
                         "Chinese mobile number takes priority over WeChat ID",
                         "bare alphanumeric message without a previous request creates no lead",
+                        "intake questions do not append contact requests",
                         "one reply per turn with at most 80 characters"]}))
                 except Exception:
                     log.flush()
