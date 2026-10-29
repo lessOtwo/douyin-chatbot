@@ -14,7 +14,7 @@ from build_fastgpt_workflow import env_password
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = '6ad7276957c1257e1bb5ed75'
-BASELINE = '0140f23'
+BASELINE = '60af129'
 AI_NODES = ('lead_received_reply', 'contact_reply', 'retry_reply', 'normal_reply')
 
 
@@ -94,11 +94,11 @@ def main():
         value = live_prompts[node_id]['value']
         for index, (old, new) in enumerate(changes, 1):
             if old.startswith('fields 为对象') and old not in value:
-                legacy = '询问类别、预约时间或购买数量时'
+                legacy = '询问服务目标细分、预约时间、批发数量、零售型号或档次时'
                 if value.count(legacy) not in (1, 2):
                     raise RuntimeError(f'Published {node_id} legacy field instruction differs')
                 value = value.replace(legacy,
-                    '询问服务目标细分、预约时间、批发数量、零售型号或档次时', 1)
+                    '询问预约时间、批发数量、零售型号或档次时', 1)
             else:
                 value = replace_once(value, old, new, f'{node_id} paragraph {index}')
         if node_id in ('contact_reply', 'retry_reply', 'normal_reply'):
@@ -108,10 +108,13 @@ def main():
                 value += new_full[len(old_full):]
                 live_prompts[node_id]['value'] = value
                 continue
-            old_extra = old_prompts[node_id]['value'].rsplit('\n', 1)[-1]
-            new_extra = new_prompts[node_id]['value'].rsplit('\n', 1)[-1]
-            if old_extra != new_extra:
-                value = replace_once(value, old_extra, new_extra, f'{node_id} branch instruction')
+            tail_count = 2 if node_id == 'normal_reply' else 1
+            old_tail = old_full.rsplit('\n', tail_count)[-tail_count:]
+            new_tail = new_full.rsplit('\n', tail_count)[-tail_count:]
+            for index, (old_extra, new_extra) in enumerate(zip(old_tail, new_tail), 1):
+                if old_extra != new_extra:
+                    value = replace_once(value, old_extra, new_extra,
+                                         f'{node_id} branch instruction {index}')
         live_prompts[node_id]['value'] = value
 
     print(f'Ready: {version}; changed {len(AI_NODES)} AI prompt nodes')
@@ -125,7 +128,7 @@ def main():
                                  indent=2) + '\n', encoding='utf-8')
     payload = {key: target[key] for key in ('nodes', 'edges', 'chatConfig')}
     request('/api/core/app/version/publish?' + query, {
-        **payload, 'isPublish': True, 'versionName': '商家话术类别'})
+        **payload, 'isPublish': True, 'versionName': '服务型直接预约时间'})
     new_version = request('/api/core/app/detail?' + query).get('publishedVersionId')
     if not new_version or new_version == version:
         raise RuntimeError('Published version did not change')

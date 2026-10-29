@@ -76,16 +76,15 @@ assert not greeting.get('contact_request'), greeting
 assert all(name in greeting['reply'] for name in ('美容护理', '日常保养')), greeting
 
 service_id = 'service-' + uuid.uuid4().hex
-service_category = ask(service_id, SERVICE, '我想在你们那洗个车，精洗')
-question(service_category)
-assert re.search('轿车|SUV|车型', service_category['reply']), service_category
-service_time = ask(service_id, SERVICE, 'SUV')
+service_time = ask(service_id, SERVICE, '我想在你们那洗个车，精洗')
 question(service_time)
 assert re.search('时间|什么时候|哪天|预约', service_time['reply']), service_time
+assert not re.search('轿车|SUV|车型', service_time['reply']), service_time
 service_contact = ask(service_id, SERVICE, '周六下午2点')
 contact(service_contact)
 assert re.search('预约|档期|时间', service_contact['contact_request']), service_contact
-assert re.search('门店|工作人员', service_contact['contact_request']), service_contact
+assert '工作人员' in service_contact['contact_request'], service_contact
+assert re.search('空闲|有人|接待|上门|可否|能否|安排', service_contact['contact_request']), service_contact
 assert re.search('周六|2点|两点', service_contact['reply'] + service_contact['contact_request']), service_contact
 service_followup = ask(service_id, SERVICE, '那精洗大概多少钱？', True)
 contact(service_followup)
@@ -95,6 +94,7 @@ already_clear = ask('already-clear-' + uuid.uuid4().hex, SERVICE,
                     'SUV精洗，想周六下午2点到店')
 contact(already_clear)
 assert re.search('预约|档期|时间', already_clear['contact_request']), already_clear
+assert re.search('空闲|有人|接待|上门|可否|能否|安排', already_clear['contact_request']), already_clear
 
 wholesale_id = 'wholesale-' + uuid.uuid4().hex
 wholesale_quantity = ask(wholesale_id, WHOLESALE, '想批发车载脚垫')
@@ -117,7 +117,7 @@ assert re.search('门店|工作人员', retail_contact['contact_request']), reta
 assert not re.search('几套|多少套|数量', retail_contact['reply'] + retail_contact['contact_request']), retail_contact
 
 print(json.dumps({'result': 'passed', 'greeting': greeting,
-                  'service': [service_category, service_time, service_contact, service_followup],
+                  'service': [service_time, service_contact, service_followup],
                   'already_clear': already_clear,
                   'wholesale': [wholesale_quantity, wholesale_contact],
                   'retail': [retail_model, retail_contact]},

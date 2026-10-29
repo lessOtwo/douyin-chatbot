@@ -100,13 +100,13 @@ def build(model):
         ai("contact_reply", "商家联系方式答疑", 1510, 390,
            "先回答客户询问的商家联系方式。仅当已审核资料允许公开且有号码时提供号码，否则说明暂时无法提供，可在本渠道继续咨询。reply 不出现电话、微信二词；仅在已进入留资阶段且 contact_request_allowed=true 时另写符合话术类别和当前阶段的 contact_request，不把它写入 reply；阶段提问时为空。只输出约定 JSON。"),
         ai("retry_reply", "拒绝后继续答疑", 1510, 650,
-           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；能做的项目直接回答具体需求，只有确定不能做才在开头说明；未经确认的预约时间只能说可帮忙申请或协调，不能承诺该时段有空位。不设置 contact_refused，不返回 stop。遵循历史和话术类别：服务型尚未问完服务目标细分与预约时间、批发型尚未问购买数量、零售型尚未问型号或档次时只问下一项，不索要；进入留资阶段且 contact_request_allowed=true 时另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
+           "客户拒绝留资、犹豫或要求停止联系时，仍针对本轮问题简短答复；能做的项目直接回答具体需求，只有确定不能做才在开头说明；未经确认的预约时间只能说可帮忙申请或协调，不能承诺该时段有空位。不设置 contact_refused，不返回 stop。遵循历史和话术类别：服务型尚未获知预约时间、批发型尚未问购买数量、零售型尚未问型号或档次时只问下一项，不索要；进入留资阶段且 contact_request_allowed=true 时另写自然变化的 contact_request；否则为空字符串。只输出约定 JSON。"),
         ai("normal_reply", "商家项目答疑", 1510, 910,
-           "先根据已审核商家资料和项目分组回答当前问题；能做的项目直接回答具体需求，不用“某项目可做”作开头；只有 excluded 或未配置项目才在开头说明不能做。具体价格或预约档期未知时说可向门店确认或申请，不把指定时段说成已可预约。只有 main、available 是本店可做项目；不要漏答客户当前问题。客户仅打招呼或需求不明时，按 main、available 项目引导并设置 fields.project_selection_only=true，不索要。客户有明确需求时按已审核“话术类别”单选值和历史推进：到店/上门服务型先问服务目标细分，再问预约时间；工厂批发型先问购买数量；零售型先问不同型号或档次。旧资料“资料或服务=预约时间/折扣”分别按服务型/批发型处理，其他旧资料才按实际需求推断。已给的信息直接沿用；问阶段问题时设置 fields.intake_question_only=true，contact_request 为空；每轮只问一项。进入留资阶段后，分别以预约时间、该数量的折扣、不同型号或档次的差异和特性需要门店或工作人员与客户沟通为理由索要联系方式。reply 仍先答复客户问题；零售型先简述有依据的差异或特点，再由工作人员详细沟通。具体参数不明时如实说明需核对，不编造型号规格；不编造已确认的档期、折扣或价格。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。完成上述阶段后，若 contact_request_allowed=true，每轮自由答疑并另写变化表达和理由的 contact_request；不返回 stop。只输出约定 JSON。"),
+           "先根据已审核商家资料和项目分组回答当前问题；能做的项目直接回答具体需求，不用“某项目可做”作开头；只有 excluded 或未配置项目才在开头说明不能做。具体价格或预约档期未知时说可向门店确认或申请，不把指定时段说成已可预约。只有 main、available 是本店可做项目；不要漏答客户当前问题。客户仅打招呼或需求不明时，按 main、available 项目引导并设置 fields.project_selection_only=true，不索要。客户有明确需求时按已审核“话术类别”单选值和历史推进：到店/上门服务型有明确需求时直接问预约时间，不先问服务目标细分；工厂批发型先问购买数量；零售型先问不同型号或档次。旧资料“资料或服务=预约时间/折扣”分别按服务型/批发型处理，其他旧资料才按实际需求推断。已给的信息直接沿用；问阶段问题时设置 fields.intake_question_only=true，contact_request 为空；每轮只问一项。进入留资阶段后，分别以该预约时间是否有空闲工作人员可接待或上门、该数量的折扣、不同型号或档次的差异和特性需要门店或工作人员与客户沟通为理由索要联系方式。reply 仍先答复客户问题；零售型先简述有依据的差异或特点，再由工作人员详细沟通。具体参数不明时如实说明需核对，不编造型号规格；不编造已确认的档期、折扣或价格。客户明确答应稍后提供本人联系方式时设置 fields.contact_promised=true，contact_request 为空；犹豫或考虑时不设置。识别到可做项目时 fields.need_type 写准确名称。已留资后继续答疑，联系渠道更正可返回 contact_method、contact_value。完成上述阶段后，若 contact_request_allowed=true，每轮自由答疑并另写变化表达和理由的 contact_request；不返回 stop。只输出约定 JSON。"),
     ]
     normal_reply = next(node for node in nodes if node["nodeId"] == "normal_reply")
     normal_prompt = next(item for item in normal_reply["inputs"] if item["key"] == "systemPrompt")
-    normal_prompt["value"] += "\n各话术类别的 contact_request 必须点明具体沟通事项：服务型为预约时间，批发型为折扣，零售型为不同型号或档次的差异和特性；同时点明由门店或工作人员与客户沟通。不能只写‘详细沟通’。"
+    normal_prompt["value"] += "\n各话术类别的 contact_request 必须点明具体沟通事项：服务型为该预约时间是否有空闲工作人员可接待或上门，批发型为折扣，零售型为不同型号或档次的差异和特性；同时点明由门店或工作人员与客户沟通。不能只写‘详细沟通’。"
     edges = [edge("workflowStartNodeId", "lead_intent"),
              edge("lead_intent", "peer_reply", "peer"),
              edge("lead_intent", "stop_reply", "stop"),
